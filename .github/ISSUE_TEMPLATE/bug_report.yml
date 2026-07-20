@@ -1,0 +1,53 @@
+name: Bug 报告
+description: 报告可复现的软件、权限或硬件兼容问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: 请先删除序列号、用户名、聊天内容、Token 和私人抓包。安全漏洞请使用 Security 私密报告。
+  - type: input
+    id: version
+    attributes:
+      label: N Agent Bridge 版本
+      placeholder: 例如 0.10.1 (26)
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 环境
+      placeholder: macOS 版本、Mac 芯片、Codex Desktop 版本
+    validations:
+      required: true
+  - type: input
+    id: keyboard
+    attributes:
+      label: 键盘
+      placeholder: 型号、固件版本、USB-C/2.4G/Bluetooth（不要填写序列号）
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已脱敏的诊断信息
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已删除凭据、序列号、用户路径、聊天内容和私人抓包
+          required: true

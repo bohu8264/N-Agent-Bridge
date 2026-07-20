@@ -1,0 +1,15 @@
+[req]
+prompt = no
+distinguished_name = subject
+x509_extensions = codesign
+
+[subject]
+CN = N Agent Bridge Local Signing
+O = N Agent Bridge Local Development
+
+[codesign]
+basicConstraints = critical,CA:false
+keyUsage = critical,digitalSignature
+extendedKeyUsage = critical,codeSigning
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer

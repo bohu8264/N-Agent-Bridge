@@ -1,0 +1,30 @@
+name: 功能建议
+description: 建议工作流、型号适配或产品改进
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 请描述用户场景，不要只写实现方式。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: 相关硬件（可选）
+      placeholder: 型号、固件、连接方式；不要填写序列号
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 硬件安全
+      options:
+        - label: 如果涉及未知 HID 写入，我理解必须先取得协议证据并完成备份、ACK、回读和恢复验证
+          required: false

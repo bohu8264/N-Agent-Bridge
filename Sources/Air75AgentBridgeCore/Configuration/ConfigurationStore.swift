@@ -1,0 +1,329 @@
+import Foundation
+
+public final class ConfigurationStore: @unchecked Sendable {
+    public enum StoreError: LocalizedError {
+        case encodingFailed
+        case backupUnreadable
+
+        public var errorDescription: String? {
+            switch self {
+            case .encodingFailed: return "无法编码配置"
+            case .backupUnreadable: return "备份写入后无法重新读取"
+            }
+        }
+    }
+
+    public let applicationSupportURL: URL
+    public let backupsURL: URL
+    private let configurationURL: URL
+    private let encoder: JSONEncoder
+    private let decoder = JSONDecoder()
+
+    public init(baseURL: URL? = nil) {
+        // Keep the legacy on-disk directory so existing configuration and the
+        // verified original-hardware backups survive the N Agent Bridge rename.
+        let root = baseURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Air75AgentBridge", isDirectory: true)
+        applicationSupportURL = root
+        backupsURL = root.appendingPathComponent("Backups", isDirectory: true)
+        configurationURL = root.appendingPathComponent("configuration-v1.json")
+        encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .iso8601
+    }
+
+    public func prepareDirectories() throws {
+        try FileManager.default.createDirectory(at: backupsURL, withIntermediateDirectories: true)
+    }
+
+    public func load() -> BridgeConfiguration {
+        guard let data = try? Data(contentsOf: configurationURL),
+              var value = try? decoder.decode(BridgeConfiguration.self, from: data) else {
+            return BridgeConfiguration()
+        }
+        if value.schemaVersion < 2 {
+            let isOriginalF13Profile = value.keyBindings.count == 12
+                && value.keyBindings.allSatisfy { $0.usagePage == 0x07 }
+                && value.keyBindings.map(\.usage) == Array(0x68...0x73)
+            if isOriginalF13Profile { value.keyBindings = BridgeConfiguration.defaultBindings }
+        }
+        if value.schemaVersion < 3 {
+            // Releases before schema 3 could save a configured keyboard with
+            // both runtime switches off. Recover it once unless the user later
+            // explicitly pauses mapping in a schema-3 build.
+            if value.boundFingerprint != nil && value.mappingPausedByUser != true {
+                value.enabled = true
+                value.codexModeEnabled = true
+                if value.mappingMode == .unavailable { value.mappingMode = .runtime }
+            }
+            value.schemaVersion = 3
+            try? save(value)
+        }
+        if value.schemaVersion < 4 {
+            // Schema 4 replaces the old whole-backlight Agent mode with the
+            // requested sidelight-only five-state mode. Enable the new mode
+            // once so an upgraded installation works immediately.
+            value.agentLightingEnabled = true
+            value.overlayEnabled = false
+            value.schemaVersion = 4
+            try? save(value)
+        }
+        if value.schemaVersion < 5 {
+            value.taskLightPalette = .default
+            value.schemaVersion = 5
+            try? save(value)
+        }
+        if value.schemaVersion < 6 {
+            if value.hardwareProfileInstalled == true, value.hardwareProfileID == nil {
+                value.hardwareProfileID = "nuphy.air75-v3"
+            }
+            value.schemaVersion = 6
+            try? save(value)
+        }
+        var requiresSchemaSave = false
+        let repairedBindings = BridgeConfiguration.repairingUnsupportedBindings(
+            value.keyBindings,
+            hardwareProfileInstalled: value.hardwareProfileInstalled == true
+        )
+        if repairedBindings != value.keyBindings {
+            value.keyBindings = repairedBindings
+            requiresSchemaSave = true
+        }
+        if value.schemaVersion < 7 {
+            value.schemaVersion = 7
+            requiresSchemaSave = true
+        }
+        if value.schemaVersion < 8 {
+            value.sidelightRestoredAfterSignalLights = false
+            value.schemaVersion = 8
+            requiresSchemaSave = true
+        }
+        if requiresSchemaSave { try? save(value) }
+        return value
+    }
+
+    public func save(_ configuration: BridgeConfiguration) throws {
+        try prepareDirectories()
+        let data = try encoder.encode(configuration)
+        try data.write(to: configurationURL, options: [.atomic, .completeFileProtection])
+    }
+
+    @discardableResult
+    public func createRuntimeBackup(device: DeviceSnapshot, configuration: BridgeConfiguration, note: String) throws -> URL {
+        try prepareDirectories()
+        let formatter = ISO8601DateFormatter()
+        let stamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let url = backupsURL.appendingPathComponent("\(stamp)-\(device.id)-runtime.json")
+        let payload = RuntimeBackup(schemaVersion: 1, createdAt: Date(), device: device,
+                                    configuration: configuration, hardwareProfileDataBase64: nil,
+                                    note: note, checksum: "pending")
+        var mutable = payload
+        let firstPass = try encoder.encode(payload)
+        mutable.checksum = FNV1a.hash(firstPass.base64EncodedString())
+        let data = try encoder.encode(mutable)
+        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        guard let readback = try? Data(contentsOf: url), readback == data else { throw StoreError.backupUnreadable }
+        return url
+    }
+
+    public func listBackups() -> [URL] {
+        (try? FileManager.default.contentsOfDirectory(at: backupsURL, includingPropertiesForKeys: [.creationDateKey]))?
+            .filter { $0.pathExtension == "json" }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent } ?? []
+    }
+
+    @discardableResult
+    public func createLightingBackup(states: [Air75LightingState], note: String,
+                                     profileID: String = "nuphy.air75-v3",
+                                     deviceFingerprint: DeviceFingerprint? = nil) throws -> URL {
+        try prepareDirectories()
+        guard Set(states.map(\.handle)) == Set([0, 1]) else { throw StoreError.encodingFailed }
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let url = backupsURL.appendingPathComponent("\(stamp)-hardware-lighting.json")
+        let backup = HardwareLightingBackup(schemaVersion: 2, createdAt: Date(), states: states, note: note,
+                                            profileID: profileID, deviceFingerprint: deviceFingerprint)
+        let data = try encoder.encode(backup)
+        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        guard let readback = try? Data(contentsOf: url), readback == data else { throw StoreError.backupUnreadable }
+        return url
+    }
+
+    public func loadLatestLightingBackup(profileID: String = "nuphy.air75-v3") -> HardwareLightingBackup? {
+        for candidate in listBackups().filter({ $0.lastPathComponent.hasSuffix("-hardware-lighting.json") }) {
+            guard let data = try? Data(contentsOf: candidate),
+                  let backup = try? decoder.decode(HardwareLightingBackup.self, from: data),
+                  backup.profileID == profileID || (backup.profileID == nil && profileID == "nuphy.air75-v3") else { continue }
+            return backup
+        }
+        return nil
+    }
+
+    /// Returns the oldest valid lighting backup for this profile. It is the
+    /// only backup guaranteed to predate all Bridge lighting writes and is
+    /// therefore the correct source for retiring the legacy Codex sidelight.
+    public func loadOriginalLightingBackup(profileID: String = "nuphy.air75-v3") -> HardwareLightingBackup? {
+        for candidate in listBackups()
+            .filter({ $0.lastPathComponent.hasSuffix("-hardware-lighting.json") })
+            .reversed() {
+            guard let data = try? Data(contentsOf: candidate),
+                  let backup = try? decoder.decode(HardwareLightingBackup.self, from: data),
+                  backup.profileID == profileID || (backup.profileID == nil && profileID == "nuphy.air75-v3") else {
+                continue
+            }
+            return backup
+        }
+        return nil
+    }
+
+    @discardableResult
+    public func createSleepBackup(configuration: KeyboardSleepConfiguration, note: String,
+                                  profileID: String,
+                                  deviceFingerprint: DeviceFingerprint? = nil) throws -> URL {
+        try prepareDirectories()
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let url = backupsURL.appendingPathComponent("\(stamp)-hardware-sleep.json")
+        let backup = HardwareSleepBackup(
+            schemaVersion: 1,
+            createdAt: Date(),
+            configuration: configuration,
+            note: note,
+            profileID: profileID,
+            deviceFingerprint: deviceFingerprint
+        )
+        let data = try encoder.encode(backup)
+        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        guard let readback = try? Data(contentsOf: url), readback == data else {
+            throw StoreError.backupUnreadable
+        }
+        return url
+    }
+
+    @discardableResult
+    public func createKeymapBackup(data: [UInt8], note: String,
+                                   profileID: String = "nuphy.air75-v3",
+                                   deviceFingerprint: DeviceFingerprint? = nil) throws -> URL {
+        guard !data.isEmpty else { throw StoreError.encodingFailed }
+        try prepareDirectories()
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let url = backupsURL.appendingPathComponent("\(stamp)-hardware-keymap.json")
+        let encoded = Data(data).base64EncodedString()
+        let backup = HardwareKeymapBackup(schemaVersion: 2, createdAt: Date(),
+                                          dataBase64: encoded, checksum: FNV1a.hash(encoded), note: note,
+                                          profileID: profileID, deviceFingerprint: deviceFingerprint,
+                                          byteCount: data.count)
+        let bytes = try encoder.encode(backup)
+        try bytes.write(to: url, options: [.atomic, .completeFileProtection])
+        guard let readback = try? Data(contentsOf: url), readback == bytes else { throw StoreError.backupUnreadable }
+        return url
+    }
+
+    public func loadLatestKeymapBackup() -> HardwareKeymapBackup? {
+        let latest = listBackups().first { $0.lastPathComponent.hasSuffix("-hardware-keymap.json") }
+        guard let latest else { return nil }
+        return loadKeymapBackup(at: latest)
+    }
+
+    public func loadKeymapBackup(named name: String) -> HardwareKeymapBackup? {
+        guard URL(fileURLWithPath: name).lastPathComponent == name else { return nil }
+        return loadKeymapBackup(at: backupsURL.appendingPathComponent(name))
+    }
+
+    public func loadOriginalKeymapBackup(preferredName: String? = nil) -> (url: URL, backup: HardwareKeymapBackup)? {
+        loadOriginalKeymapBackup(
+            profileID: "nuphy.air75-v3",
+            expectedByteCount: Air75V3KeymapController.keymapByteCount,
+            preferredName: preferredName,
+            isPlausibleKeymap: Air75V3KeymapController.isPlausibleKeymap,
+            isBridgeProfile: Air75V3KeymapController.hasBridgeProfile
+        )
+    }
+
+    public func loadOriginalKeymapBackup(
+        profileID: String,
+        expectedByteCount: Int,
+        preferredName: String? = nil,
+        isPlausibleKeymap: ([UInt8]) -> Bool,
+        isBridgeProfile: ([UInt8]) -> Bool
+    ) -> (url: URL, backup: HardwareKeymapBackup)? {
+        var candidates: [URL] = []
+        if let preferredName,
+           URL(fileURLWithPath: preferredName).lastPathComponent == preferredName {
+            candidates.append(backupsURL.appendingPathComponent(preferredName))
+        }
+        candidates.append(contentsOf: listBackups().filter {
+            $0.lastPathComponent.hasSuffix("-hardware-keymap.json")
+                && !candidates.contains($0)
+        })
+        for url in candidates {
+            guard let backup = loadKeymapBackup(at: url), let bytes = backup.bytes,
+                  bytes.count == expectedByteCount,
+                  backup.profileID == profileID || (backup.profileID == nil && profileID == "nuphy.air75-v3"),
+                  isPlausibleKeymap(bytes),
+                  !isBridgeProfile(bytes) else { continue }
+            return (url, backup)
+        }
+        return nil
+    }
+
+    private func loadKeymapBackup(at url: URL) -> HardwareKeymapBackup? {
+        guard let data = try? Data(contentsOf: url),
+              let backup = try? decoder.decode(HardwareKeymapBackup.self, from: data),
+              backup.checksum == FNV1a.hash(backup.dataBase64),
+              let bytes = backup.bytes,
+              bytes.count == (backup.byteCount ?? Air75V3KeymapController.keymapByteCount) else { return nil }
+        return backup
+    }
+}
+
+public struct RuntimeBackup: Codable, Sendable {
+    public var schemaVersion: Int
+    public var createdAt: Date
+    public var device: DeviceSnapshot
+    public var configuration: BridgeConfiguration
+    public var hardwareProfileDataBase64: String?
+    public var note: String
+    public var checksum: String
+}
+
+public struct HardwareLightingBackup: Codable, Sendable {
+    public var schemaVersion: Int
+    public var createdAt: Date
+    public var states: [Air75LightingState]
+    public var note: String
+    public var profileID: String?
+    public var deviceFingerprint: DeviceFingerprint?
+}
+
+public struct HardwareSleepBackup: Codable, Sendable {
+    public var schemaVersion: Int
+    public var createdAt: Date
+    public var configuration: KeyboardSleepConfiguration
+    public var note: String
+    public var profileID: String
+    public var deviceFingerprint: DeviceFingerprint?
+}
+
+public struct HardwareKeymapBackup: Codable, Sendable {
+    public var schemaVersion: Int
+    public var createdAt: Date
+    public var dataBase64: String
+    public var checksum: String
+    public var note: String
+    public var profileID: String?
+    public var deviceFingerprint: DeviceFingerprint?
+    public var byteCount: Int?
+
+    public var bytes: [UInt8]? { Data(base64Encoded: dataBase64).map(Array.init) }
+}
+
+public enum FNV1a {
+    public static func hash(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(format: "%016llx", hash)
+    }
+}

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 2,
+  "id": "nuphy.air75-v3",
+  "model": "NuPhy Air75 V3",
+  "protocolFamily": "nuphyS4",
+  "capabilities": {
+    "keymapDriverID": "nuphy.s4.air75v3-keymap",
+    "lightingDriverID": "nuphy.s4.17byte-lighting",
+    "sleepDriverID": "nuphy.s4.air75v3-sleep",
+    "keymapByteCount": 1568,
+    "hasKnob": true,
+    "hasSidelight": true,
+    "supportsWirelessConfiguration": true
+  },
+  "usbIdentities": [
+    { "vendorID": 6645, "productID": 4136 },
+    { "vendorID": 6645, "productID": 9760 }
+  ],
+  "bluetoothVendorIDs": [2007, 6645],
+  "productAliases": ["Air75 V3", "Air75 V3-1", "Air75 V3-2", "Air75 V3-3", "NuPhy Air75 V3 Dongle"],
+  "manufacturerAliases": ["NuPhy", "NuPhy Keyboard", "NuPhy Keybord"],
+  "allowedUsagePages": [1, 7, 12, 65280, 65376, 65535],
+  "specialUsages": [58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69]
+}
