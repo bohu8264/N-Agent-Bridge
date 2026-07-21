@@ -176,9 +176,12 @@ struct OnboardingView: View {
                 SetupRow(
                     number: "3",
                     title: "启用 Codex 控制",
-                    detail: store.configuration.enabled ? "专用按键与\(store.reasoningControlName)已经可以使用" : "自动备份并写入当前型号的专用控制层",
-                    complete: store.configuration.enabled,
-                    buttonTitle: store.configuration.enabled ? nil : "启用",
+                    detail: store.configuration.enabled && !store.currentHardwareProfileNeedsInstallation
+                        ? "专用按键与\(store.reasoningControlName)已经可以使用"
+                        : "自动备份并写入当前型号的专用控制层",
+                    complete: store.configuration.enabled && !store.currentHardwareProfileNeedsInstallation,
+                    buttonTitle: store.configuration.enabled && !store.currentHardwareProfileNeedsInstallation
+                        ? nil : "启用",
                     buttonEnabled: usbConnected || store.configuration.hasAnyInstalledHardwareProfile,
                     action: { store.oneClickEnable() }
                 )
@@ -265,7 +268,9 @@ struct OverviewView: View {
     let openSettings: () -> Void
 
     private var controlsReady: Bool {
-        store.configuration.mappingMode != .unavailable && store.codexDesktopKeybindingsInstalled
+        !store.currentHardwareProfileNeedsInstallation
+            && store.configuration.mappingMode != .unavailable
+            && store.codexDesktopKeybindingsInstalled
     }
 
     private var permissionsReady: Bool {
@@ -344,10 +349,18 @@ struct OverviewView: View {
                         ReadinessRow(
                             icon: "command",
                             title: "Codex 控制",
-                            value: store.hardwareProfileBusy ? "正在配置" : (controlsReady ? "已配置" : "需要配置"),
+                            value: store.hardwareProfileBusy
+                                ? "正在配置"
+                                : (controlsReady
+                                    ? "已配置"
+                                    : (store.currentHardwareProfileNeedsInstallation ? "需要配置当前键盘" : "需要配置")),
                             ready: controlsReady,
-                            actionTitle: store.hardwareProfileBusy || controlsReady ? nil : "修复",
-                            action: { store.installCodexDesktopBindings() }
+                            actionTitle: store.hardwareProfileBusy || controlsReady
+                                ? nil : (store.currentHardwareProfileNeedsInstallation ? "配置" : "修复"),
+                            action: {
+                                if store.currentHardwareProfileNeedsInstallation { store.oneClickEnable() }
+                                else { store.installCodexDesktopBindings() }
+                            }
                         )
                         Divider().padding(.leading, 44)
                         ReadinessRow(

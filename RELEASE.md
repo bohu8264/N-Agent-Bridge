@@ -1,5 +1,14 @@
 # Release
 
+## 0.13.4 Development Build
+
+- 版本：`0.13.4 (52)`。
+- 修复 Kick75 已在首页识别，但灯光页仍停在“USB-C 待响应”且控件全部置灰：连接后先完成安全的只读 D5 握手，不再因当前型号尚未安装专用层而跳过灯光读取。
+- 概览就绪状态改为按当前连接型号判断；Kick75 尚未配置时显示“需要配置当前键盘”，配置按钮执行完整键盘 Profile、Codex 快捷键与灯光初始化流程。
+- 首次配置等待时间覆盖 Kick75 固件的完整灯光重试窗口；写入仍严格限定已验证的 HID handle 和型号白名单。
+- Debug App、software-only SelfTest、Universal（arm64 + x86_64）App、固定签名、Bundle 资源与 DMG CRC/结构验证：通过。
+- Development DMG SHA-256：`a1ef87df42aae6643e4113525dcee4cb84a039937b8ae06f18472e40a4c0b978`。
+
 ## 0.13.3 Development Build
 
 - 版本：`0.13.3 (51)`。

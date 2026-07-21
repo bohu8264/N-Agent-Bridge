@@ -150,12 +150,8 @@ final class BridgeStore: ObservableObject {
                 if detectedConnection != nil,
                    (connectionChanged || self.lightingStates.isEmpty || !self.lightingAvailable),
                    !self.lightingBusy,
-                   !self.hardwareProfileBusy,
-                   !self.currentHardwareProfileNeedsInstallation {
+                   !self.hardwareProfileBusy {
                     self.refreshLighting()
-                } else if detectedConnection != nil,
-                          self.currentHardwareProfileNeedsInstallation {
-                    self.lightingMessage = "首次配置会自动设置指示灯模式"
                 } else if detectedConnection == nil, connectionChanged {
                     self.lightingMessage = devices.contains(where: {
                         $0.isRecognized && $0.transports.contains(.bluetooth)
@@ -377,7 +373,11 @@ final class BridgeStore: ObservableObject {
             lastMessage = hardwareProfileMessage
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                for _ in 0..<80 where self.lightingBusy {
+                // A full D5 read can make several bounded firmware retries.
+                // Wait longer than that read window so clicking Configure
+                // during discovery reliably continues instead of timing out
+                // just before the lighting transaction releases the channel.
+                for _ in 0..<240 where self.lightingBusy {
                     try? await Task.sleep(for: .milliseconds(75))
                 }
                 self.hardwareProfileBusy = false
