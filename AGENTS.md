@@ -6,11 +6,11 @@
 
 这是一个面向 NuPhy 键盘的原生 macOS SwiftUI 菜单栏应用，把受支持型号的实体控制中继到当前 Codex Desktop。型号 Profile 与硬件写入 driver 分离；当前完整验证 Air75 V3，未知型号默认只有安全识别能力，不记录普通文字输入，不冒充 OpenAI 官方硬件，也不猜测未知固件写入协议。
 
-当前开发版：`0.11.6 (33)`（确认卡检测只在同一局部卡片内匹配真正的肯定/否定操作；输入框常驻“请求批准”入口不会误亮橙灯；继承 0.11.5 的正式 `Thread.name` 实时任务名与六任务状态灯）。
+当前开发版：`0.11.7 (34)`（灯光页移除无效且容易误导的背光/侧灯亮度控制；保留灯效、颜色、休眠时间及六任务状态灯；继承 0.11.6 的确认卡橙灯误判修复）。
 
 - 源码根目录：本文件所在目录
-- 0.11.6 已完成 Debug 编译、software-only SelfTest、Universal Release、固定签名、DMG CRC/结构验证与原位安装。制品为 `dist/NAgentBridge-0.11.6-Development.dmg`，SHA-256：`f2d392b589d798f51591d58de62166a14307f7e1d4f162b0f6bcf86ef055bee7`。
-- 当前安装位置：`/Applications/N Agent Bridge.app`，版本 `0.11.6 (33)`；输入监控/辅助功能均为 `1`，HID manager open result 为 `0`，灯光通道可用；与 0.11.5 的 Designated Requirement 完全一致
+- 0.11.7 已完成界面代码清理、Debug 编译、software-only SelfTest、Universal Release、固定签名、DMG CRC/结构验证与原位安装。制品为 `dist/NAgentBridge-0.11.7-Development.dmg`，SHA-256：`bf31a20a7ab6c4a4ff42a75c07a0196414bfc08009aaf0321186ed0e4db0ec15`。
+- 当前安装位置：`/Applications/N Agent Bridge.app`，版本 `0.11.7 (34)`；升级后需复核输入监控、辅助功能、HID 和灯光诊断
 - 当前签名：固定本机身份 `N Agent Bridge Local Signing`，Bundle ID `com.nagentbridge.mac`；不是 Developer ID/Apple 公证的公开发行签名
 
 ## 2. 接手后先读

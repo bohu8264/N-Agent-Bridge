@@ -746,10 +746,6 @@ private struct KnobAction: View {
 
 struct LightingView: View {
     @EnvironmentObject private var store: BridgeStore
-    @State private var backlightBrightness = 50.0
-    @State private var sidelightBrightness = 50.0
-    @State private var backlightBrightnessWrite: Task<Void, Never>?
-    @State private var sidelightBrightnessWrite: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -790,24 +786,6 @@ struct LightingView: View {
                     }
 
                     Divider()
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text("亮度").font(.subheadline.weight(.medium))
-                            Spacer()
-                            Text("\(Int(backlightBrightness))%")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                        Slider(
-                            value: Binding(
-                                get: { backlightBrightness },
-                                set: { scheduleBacklightBrightness($0) }
-                            ),
-                            in: 0...100,
-                            step: 10
-                        )
-                    }
 
                     HStack(spacing: 12) {
                         Text("常亮颜色")
@@ -932,21 +910,6 @@ struct LightingView: View {
                                 .labelsHidden()
                                 .frame(width: 150)
                             }
-                            HStack {
-                                Text("亮度").font(.subheadline.weight(.medium))
-                                Slider(
-                                    value: Binding(
-                                        get: { sidelightBrightness },
-                                        set: { scheduleSidelightBrightness($0) }
-                                    ),
-                                    in: 0...100,
-                                    step: 10
-                                )
-                                Text("\(Int(sidelightBrightness))%")
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 38, alignment: .trailing)
-                            }
                             HStack(spacing: 12) {
                                 Text("常亮颜色")
                                     .font(.subheadline.weight(.medium))
@@ -976,44 +939,6 @@ struct LightingView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
-        .onAppear { syncBrightness() }
-        .onChange(of: store.lightingStates) { _ in syncBrightness() }
-        .onDisappear {
-            backlightBrightnessWrite?.cancel()
-            sidelightBrightnessWrite?.cancel()
-        }
-    }
-
-    /// SwiftUI's macOS Slider does not consistently deliver the final
-    /// `onEditingChanged(false)` callback for every click/drag path. Commit
-    /// the last value after a short quiet period instead, so intermediate
-    /// values are coalesced into one verified HID transaction.
-    private func scheduleBacklightBrightness(_ value: Double) {
-        backlightBrightness = value
-        backlightBrightnessWrite?.cancel()
-        let target = Int(value)
-        backlightBrightnessWrite = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            store.setBacklightBrightness(target)
-        }
-    }
-
-    private func scheduleSidelightBrightness(_ value: Double) {
-        sidelightBrightness = value
-        sidelightBrightnessWrite?.cancel()
-        let target = Int(value)
-        sidelightBrightnessWrite = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            store.setSidelightBrightness(target)
-        }
-    }
-
-    private func syncBrightness() {
-        guard let state = store.lightingStates.first else { return }
-        backlightBrightness = Double(state.backlight.brightness)
-        sidelightBrightness = Double(state.sidelight.brightness)
     }
 
     private var lightingStatusText: String {
@@ -1457,7 +1382,7 @@ private let backlightColors: [(hex: String, name: String)] = [
 ]
 
 private var appVersion: String {
-    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.6"
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.7"
 }
 
 private func deviceConnectionText(_ device: DeviceSnapshot?) -> String {
