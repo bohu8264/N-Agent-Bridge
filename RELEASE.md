@@ -1,5 +1,15 @@
 # Release
 
+## 0.13.1 Development Build
+
+- 版本：`0.13.1 (49)`。
+- USB-C 启用不再只相信旧的“已安装”记录；每次都会读取实体键位、自动修复 F1–F12 为专用 F13–F24，并完成完整回读，避免 Codex 动作与 macOS 原生功能同时触发。
+- Air75 V3 与 Node100 LP ANSI 首次配置会一次性选择“指示灯”背光；以后不覆盖用户手动选择的灯效。
+- 未读任务不再绕过推理状态过期；30 分钟没有新推理或工具事件会回到空闲，避免没有任务时长期误亮蓝灯。
+- 包含 Node100 LP ANSI 完整实机适配及此前 Kick75 的安全灯光、休眠和自定义键位状态灯修复。
+- Debug App、software-only SelfTest、Universal（arm64 + x86_64）App、固定签名、DMG CRC/结构验证和 0.13.1 (49) 原位安装：通过；最终复核时无键盘在线，USB-C 实写需在下次接入时验收。
+- Development DMG SHA-256：`5971087e36852805866b8f3a2ab0a38d9e68cb0162eb7425993c82123d7bc2c4`。
+
 ## 0.11.7 Development Build
 
 - 版本：`0.11.7 (34)`。

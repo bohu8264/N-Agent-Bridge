@@ -6,8 +6,8 @@ project_dir=${script_dir:h}
 distribution_dir="$project_dir/Distribution"
 output_dir="$project_dir/dist"
 app_dir="$output_dir/N Agent Bridge.app"
-version_value=${AIR75_VERSION:-0.11.7}
-build_value=${AIR75_BUILD_NUMBER:-34}
+version_value=${AIR75_VERSION:-0.13.1}
+build_value=${AIR75_BUILD_NUMBER:-49}
 release_kind=${AIR75_RELEASE_KIND:-development}
 identity_value=${AIR75_SIGNING_IDENTITY:-N Agent Bridge Local Signing}
 arch_values=${AIR75_RELEASE_ARCHS:-}
@@ -109,7 +109,7 @@ for resource_bundle in "${release_bin_dirs[1]}"/*.bundle; do
 done
 
 profile_bundle="$app_dir/Contents/Resources/Air75AgentBridge_Air75AgentBridgeCore.bundle"
-for profile_filename in Air75V3.json Air65V3.json Air100V3.json Kick75.json Node75.json Node100.json; do
+for profile_filename in Air75V3.json Air65V3.json Air100V3.json Kick75.json Node75.json Node100.json Node100LPANSI.json; do
   profile_resource="$profile_bundle/$profile_filename"
   [[ -f "$profile_resource" ]] || {
     echo "Missing packaged device profile: $profile_resource" >&2

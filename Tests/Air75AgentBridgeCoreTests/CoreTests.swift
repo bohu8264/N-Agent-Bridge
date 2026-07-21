@@ -155,7 +155,7 @@ final class CoreTests: XCTestCase {
         }
         try store.save(legacy)
         let migrated = store.load()
-        XCTAssertEqual(migrated.schemaVersion, 11)
+        XCTAssertEqual(migrated.schemaVersion, 12)
         XCTAssertEqual(migrated.keyBindings.map(\.usage), Array(0x3A...0x45))
         XCTAssertEqual(migrated.agentLightingEnabled, true)
         XCTAssertFalse(migrated.overlayEnabled)
@@ -263,6 +263,119 @@ final class CoreTests: XCTestCase {
         XCTAssertFalse(Kick75KeymapController.hasBridgeProfile(bytes))
     }
 
+    func testNode100LPANSIProfileUsesTouchZoneWithoutChangingFnLayers() throws {
+        let entriesPerLayer = 119
+        var bytes = [UInt8](
+            repeating: 0,
+            count: Node100LPANSIKeymapController.keymapByteCount
+        )
+        func set(_ value: UInt16, layer: Int, entry: Int) {
+            let offset = (layer * entriesPerLayer + entry) * 2
+            bytes[offset] = UInt8(value >> 8)
+            bytes[offset + 1] = UInt8(value & 0xFF)
+        }
+        func get(_ source: [UInt8], layer: Int, entry: Int) -> UInt16 {
+            let offset = (layer * entriesPerLayer + entry) * 2
+            return (UInt16(source[offset]) << 8) | UInt16(source[offset + 1])
+        }
+        let macRow: [UInt16] = [
+            0x0069, 0x006A, 0x7E06, 0x7E07, 0x7E08, 0x7E16,
+            0x00AC, 0x00AE, 0x00AB, 0x00A8, 0x00AA, 0x00A9,
+        ]
+        for (offset, value) in macRow.enumerated() {
+            set(value, layer: 0, entry: offset + 1)
+        }
+        for (offset, value) in (0x003A...0x0045).enumerated() {
+            set(UInt16(value), layer: 4, entry: offset + 1)
+        }
+        for layer in [0, 4] {
+            set(0x00A8, layer: layer, entry: 115)
+            set(0x00AB, layer: layer, entry: 116)
+            set(0x00AA, layer: layer, entry: 117)
+            set(0x00A9, layer: layer, entry: 118)
+        }
+        // Fn/Mac touch gestures are intentionally outside the Bridge transform.
+        set(0x00A8, layer: 1, entry: 115)
+        set(0x0069, layer: 1, entry: 117)
+        set(0x006A, layer: 1, entry: 118)
+
+        let result = try Node100LPANSIKeymapController().makeBridgeProfile(from: bytes)
+        XCTAssertEqual(
+            (1...12).map { get(result, layer: 0, entry: $0) },
+            Array(0x68...0x73).map(UInt16.init)
+        )
+        XCTAssertEqual(
+            (1...12).map { get(result, layer: 4, entry: $0) },
+            Array(0x68...0x73).map(UInt16.init)
+        )
+        for layer in [0, 4] {
+            XCTAssertEqual(get(result, layer: layer, entry: 115), 0x0048)
+            XCTAssertEqual(get(result, layer: layer, entry: 116), 0x00AB)
+            XCTAssertEqual(get(result, layer: layer, entry: 117), 0x0047)
+            XCTAssertEqual(get(result, layer: layer, entry: 118), 0x0046)
+        }
+        XCTAssertEqual(get(result, layer: 1, entry: 115), 0x00A8)
+        XCTAssertEqual(get(result, layer: 1, entry: 117), 0x0069)
+        XCTAssertEqual(get(result, layer: 1, entry: 118), 0x006A)
+        XCTAssertTrue(Node100LPANSIKeymapController.hasBridgeProfile(result))
+        XCTAssertFalse(Node100LPANSIKeymapController.hasBridgeProfile(bytes))
+    }
+
+    func testNode100LPANSIExactProfileEnablesOnlyItsKeymapDriver() throws {
+        let profileURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                "Sources/Air75AgentBridgeCore/Resources/DeviceProfiles/Node100LPANSI.json"
+            )
+        let profile = try JSONDecoder().decode(
+            DeviceProfile.self,
+            from: Data(contentsOf: profileURL)
+        )
+        let registry = DeviceProfileRegistry(profiles: [profile])
+        let match = registry.bestMatch(
+            vendorID: 0x19F5,
+            productID: 0x1037,
+            product: "Node 100 LP",
+            manufacturer: "NuPhy",
+            transport: .usb,
+            usagePage: 1,
+            usage: 6,
+            confirmedFingerprint: nil
+        )
+        XCTAssertEqual(match?.profile.profileID, "nuphy.node100-lp-ansi")
+        XCTAssertEqual(match?.confidence, 100)
+        XCTAssertTrue(
+            KeyboardDriverRegistry.keymapDriver(for: match?.profile)
+                is Node100LPANSIKeymapController
+        )
+        let lighting = KeyboardDriverRegistry.lightingDriver(for: match?.profile)
+        XCTAssertEqual(lighting?.profileID, "nuphy.node100-lp-ansi")
+        XCTAssertEqual(lighting?.supportedBacklightModes, [.staticColor, .breathing, .signalIndicator])
+        XCTAssertEqual(lighting?.supportedSidelightModes, [.staticColor, .breathing])
+        XCTAssertEqual(
+            SignalLightLayout.index(
+                layoutID: match?.profile.capabilities?.signalLightLayoutID,
+                usagePage: 0x07,
+                usage: 0x68
+            ),
+            1
+        )
+        XCTAssertEqual(
+            SignalLightLayout.index(
+                layoutID: match?.profile.capabilities?.signalLightLayoutID,
+                usagePage: 0x07,
+                usage: 0x14
+            ),
+            44
+        )
+        XCTAssertEqual(
+            KeyboardDriverRegistry.sleepDriver(for: match?.profile)?.profileID,
+            "nuphy.node100-lp-ansi"
+        )
+    }
+
     func testInstalledHardwareProfilesAreIndependentPerModel() {
         var configuration = BridgeConfiguration()
         configuration.setHardwareProfileState(
@@ -354,6 +467,42 @@ final class CoreTests: XCTestCase {
 
         let failed = started + Data("\n{\"timestamp\":\"2026-07-19T05:00:05.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"error\"}}".utf8)
         XCTAssertEqual(CodexRolloutStatusParser.parse(data: failed, now: now).state, .error)
+
+        let staleReasoning = CodexTaskLightSnapshot(
+            threadID: "thread-1",
+            state: .reasoning,
+            eventDate: now.addingTimeInterval(-CodexRolloutStatusParser.reasoningStaleDuration - 1)
+        )
+        XCTAssertEqual(
+            CodexRolloutStatusParser.applyDecay(
+                to: staleReasoning,
+                now: now,
+                preserveUnreadCompletion: true
+            ).state,
+            .idle
+        )
+        let staleUnreadCompletion = CodexTaskLightSnapshot(
+            threadID: "thread-1",
+            state: .complete,
+            eventDate: now.addingTimeInterval(-CodexRolloutStatusParser.completionVisibleDuration - 1)
+        )
+        XCTAssertEqual(
+            CodexRolloutStatusParser.applyDecay(
+                to: staleUnreadCompletion,
+                now: now,
+                preserveUnreadCompletion: true
+            ).state,
+            .complete
+        )
+    }
+
+    func testIndicatorModeInitializationIsTrackedPerModel() {
+        var configuration = BridgeConfiguration()
+        XCTAssertFalse(configuration.hasInitializedIndicatorMode(for: "nuphy.air75-v3"))
+        XCTAssertFalse(configuration.hasInitializedIndicatorMode(for: "nuphy.node100-lp-ansi"))
+        configuration.markIndicatorModeInitialized(for: "nuphy.air75-v3")
+        XCTAssertTrue(configuration.hasInitializedIndicatorMode(for: "nuphy.air75-v3"))
+        XCTAssertFalse(configuration.hasInitializedIndicatorMode(for: "nuphy.node100-lp-ansi"))
     }
 
     func testCodexDesktopConfirmationCardAndActiveThreadParsing() {

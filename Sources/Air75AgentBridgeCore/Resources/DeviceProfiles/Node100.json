@@ -10,7 +10,6 @@
   },
   "usbIdentities": [
     { "vendorID": 6645, "productID": 4150 },
-    { "vendorID": 6645, "productID": 4151 },
     { "vendorID": 6645, "productID": 4152 },
     { "vendorID": 6645, "productID": 4153 },
     { "vendorID": 6645, "productID": 4154 },
@@ -19,7 +18,7 @@
     { "vendorID": 6645, "productID": 9760 }
   ],
   "bluetoothVendorIDs": [2007, 6645],
-  "productAliases": ["Node100", "Node100 Low", "Node100 High", "Node100 ISO", "Node100 JIS", "Node100-1", "Node100-2", "Node100-3", "NuPhy Node100 Dongle"],
+  "productAliases": ["Node100", "Node100 High", "Node100 ISO", "Node100 JIS", "Node100-1", "Node100-2", "Node100-3", "NuPhy Node100 Dongle"],
   "manufacturerAliases": ["NuPhy", "NuPhy Keyboard", "NuPhy Keybord"],
   "allowedUsagePages": [1, 7, 12, 65280, 65376, 65535],
   "specialUsages": [58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69]

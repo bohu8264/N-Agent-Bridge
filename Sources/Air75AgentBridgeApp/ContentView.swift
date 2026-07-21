@@ -176,7 +176,7 @@ struct OnboardingView: View {
                 SetupRow(
                     number: "3",
                     title: "启用 Codex 控制",
-                    detail: store.configuration.enabled ? "专用按键与旋钮已经可以使用" : "自动备份并写入当前型号的专用控制层",
+                    detail: store.configuration.enabled ? "专用按键与\(store.reasoningControlName)已经可以使用" : "自动备份并写入当前型号的专用控制层",
                     complete: store.configuration.enabled,
                     buttonTitle: store.configuration.enabled ? nil : "启用",
                     buttonEnabled: usbConnected || store.configuration.hasAnyInstalledHardwareProfile,
@@ -286,8 +286,8 @@ struct OverviewView: View {
     private var heroSubtitle: String {
         if isReady, store.installedHardwareProfileIsCurrent {
             return store.signalLightingSupported
-                ? "自定义按键、旋钮与 Agent 状态灯正在与 Codex 协同工作。"
-                : "\(store.currentModelName) 的 F1–F12 与旋钮正在控制 Codex；当前型号灯光仍保持键盘原生效果。"
+                ? "自定义按键、\(store.reasoningControlName)与 Agent 状态灯正在与 Codex 协同工作。"
+                : "\(store.currentModelName) 的 F1–F12 与\(store.reasoningControlName)正在控制 Codex；当前型号灯光仍保持键盘原生效果。"
         }
         if isReady { return "自定义按键正在安全的软件模式下控制 Codex；未写入未经验证的键盘固件。" }
         if store.currentDevice == nil { return "打开键盘并连接蓝牙，首次设置请使用 USB-C。" }
@@ -513,11 +513,15 @@ struct ControlsView: View {
 
             PremiumCard {
                 VStack(alignment: .leading, spacing: 14) {
-                    CardHeading(icon: "dial.medium", title: "旋钮", subtitle: "调整当前 Codex 的推理深度")
+                    CardHeading(
+                        icon: store.reasoningControlName == "触控条" ? "hand.draw" : "dial.medium",
+                        title: store.reasoningControlName,
+                        subtitle: "调整当前 Codex 的推理深度"
+                    )
                     HStack(spacing: 12) {
-                        KnobAction(icon: "rotate.left", title: "向左旋转", detail: "降低推理深度")
-                        KnobAction(icon: "button.programmable", title: "按下旋钮", detail: "打开模型与推理")
-                        KnobAction(icon: "rotate.right", title: "向右旋转", detail: "提高推理深度")
+                        KnobAction(icon: store.reasoningControlName == "触控条" ? "arrow.left" : "rotate.left", title: store.reasoningControlGestures[0].title, detail: store.reasoningControlGestures[0].detail)
+                        KnobAction(icon: "button.programmable", title: store.reasoningControlGestures[1].title, detail: store.reasoningControlGestures[1].detail)
+                        KnobAction(icon: store.reasoningControlName == "触控条" ? "arrow.right" : "rotate.right", title: store.reasoningControlGestures[2].title, detail: store.reasoningControlGestures[2].detail)
                     }
                 }
             }
@@ -526,7 +530,7 @@ struct ControlsView: View {
                 InlineNotice(
                     icon: "wrench.and.screwdriver",
                     title: store.codexRestartRequired ? "需要重新打开 Codex" : "Codex 控制需要修复",
-                    text: store.codexRestartRequired ? "重启后，F11 与旋钮就会使用新快捷键。" : "重新安装本机控制快捷键，不会改变你的 Codex 数据。",
+                    text: store.codexRestartRequired ? "重启后，F11 与\(store.reasoningControlName)就会使用新快捷键。" : "重新安装本机控制快捷键，不会改变你的 Codex 数据。",
                     color: .orange,
                     buttonTitle: store.codexRestartRequired ? nil : "立即修复",
                     action: store.installCodexDesktopBindings
@@ -782,7 +786,7 @@ struct LightingView: View {
                             get: { Air75BacklightMode(rawValue: store.lightingStates.first?.backlight.mode ?? 6) ?? .wave },
                             set: { store.setBacklightMode($0) }
                         )) {
-                            ForEach(Air75BacklightMode.allCases) { mode in
+                            ForEach(store.supportedBacklightModes) { mode in
                                 Text(mode.displayName).tag(mode)
                             }
                         }
@@ -911,7 +915,7 @@ struct LightingView: View {
 
                     VStack(alignment: .leading, spacing: 16) {
                             HStack {
-                                Text("普通侧灯灯效").font(.subheadline.weight(.medium))
+                                Text(store.secondaryLightingZoneName).font(.subheadline.weight(.medium))
                                 Spacer()
                                 Picker("侧灯灯效", selection: Binding(
                                     get: {
@@ -987,9 +991,9 @@ struct LightingView: View {
         if !store.lightingAvailable { return store.lightingMessage }
         switch store.lightingConnection {
         case .twoPointFourGHzReceiver:
-            return "Agent 实体键状态正通过 2.4G 接收器同步；普通侧灯保持用户灯效。"
+            return "Agent 实体键状态正通过 2.4G 接收器同步；\(store.secondaryLightingZoneName)保持用户设置。"
         case .usbCable:
-            return "Agent 实体键状态正通过 USB-C 同步；普通侧灯保持用户灯效。"
+            return "Agent 实体键状态正通过 USB-C 同步；\(store.secondaryLightingZoneName)保持用户设置。"
         case nil:
             if store.devices.contains(where: { $0.isRecognized && $0.transports.contains(.bluetooth) }) {
                 return "蓝牙按键可用，但当前固件没有实时状态灯通道；请使用 USB-C 或 2.4G。"

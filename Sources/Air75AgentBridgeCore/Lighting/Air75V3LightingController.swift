@@ -152,6 +152,7 @@ public enum Air75LightingError: LocalizedError {
     case sessionKeyConflict(UInt8)
     case sleepVerificationFailed(expected: [UInt8], actual: [UInt8])
     case invalidSignalLights
+    case unsupportedBacklightMode(model: String, mode: Air75BacklightMode)
     case unsupportedSidelightMode(model: String, mode: Air75SidelightMode)
     case stateWritesNotVerified(String)
     case stateReadbackMismatch(String)
@@ -176,6 +177,8 @@ public enum Air75LightingError: LocalizedError {
             return "键盘休眠时间回读不一致（期望 \(expectedBytes)，实际 \(actualBytes)）；已尝试恢复修改前设置"
         case .invalidSignalLights:
             return "F1–F6 指示灯数据无效"
+        case .unsupportedBacklightMode(let model, let mode):
+            return "\(model) 不支持背光效果“\(mode.displayName)”"
         case .unsupportedSidelightMode(let model, let mode):
             return "\(model) 不支持侧灯效果“\(mode.displayName)”"
         case .stateWritesNotVerified(let model):
@@ -211,6 +214,7 @@ public final class Air75V3LightingController: @unchecked Sendable {
     private let deviceDisplayName: String
     public let profileID: String
     public let supportsFullLightingControl: Bool
+    public let supportedBacklightModes: [Air75BacklightMode]
     public let supportedSidelightModes: [Air75SidelightMode]
     /// D5 exposes separate Mac and Windows lighting profiles as handles 0
     /// and 1. Only handles that passed a hardware round trip may be written.
@@ -223,6 +227,7 @@ public final class Air75V3LightingController: @unchecked Sendable {
         self.deviceDisplayName = "Air75 V3"
         self.profileID = "nuphy.air75-v3"
         self.supportsFullLightingControl = true
+        self.supportedBacklightModes = Air75BacklightMode.allCases
         self.supportedSidelightModes = Air75SidelightMode.allCases
         self.writableLightingHandles = [0, 1]
     }
@@ -238,6 +243,7 @@ public final class Air75V3LightingController: @unchecked Sendable {
         receiverProductID: Int? = nil,
         supportsFullLightingControl: Bool,
         writableLightingHandles: Set<Int> = [0, 1],
+        supportedBacklightModes: [Air75BacklightMode] = Air75BacklightMode.allCases,
         supportedSidelightModes: [Air75SidelightMode] = Air75SidelightMode.allCases,
         preferredConnection: KeyboardLightingConnection? = nil
     ) {
@@ -247,6 +253,7 @@ public final class Air75V3LightingController: @unchecked Sendable {
         self.deviceDisplayName = deviceDisplayName
         self.profileID = profileID
         self.supportsFullLightingControl = supportsFullLightingControl
+        self.supportedBacklightModes = supportedBacklightModes
         self.supportedSidelightModes = supportedSidelightModes
         self.writableLightingHandles = writableLightingHandles.intersection([0, 1])
     }
@@ -388,6 +395,12 @@ public final class Air75V3LightingController: @unchecked Sendable {
     public func setBacklight(mode: Air75BacklightMode? = nil, brightness: Int? = nil,
                              color: Air75RGBColor? = nil) throws -> [Air75LightingState] {
         try requireFullLightingControl()
+        if let mode, !supportedBacklightModes.contains(mode) {
+            throw Air75LightingError.unsupportedBacklightMode(
+                model: deviceDisplayName,
+                mode: mode
+            )
+        }
         return try updateAllStates { raw in
             if let mode { raw[0] = UInt8(mode.rawValue) }
             if let brightness { raw[1] = UInt8(min(max(brightness, 0), 100)) }
@@ -424,6 +437,12 @@ public final class Air75V3LightingController: @unchecked Sendable {
     @discardableResult
     public func setStaticColor(_ color: Air75RGBColor, brightness: Int? = nil) throws -> [Air75LightingState] {
         try requireFullLightingControl()
+        guard supportedBacklightModes.contains(.staticColor) else {
+            throw Air75LightingError.unsupportedBacklightMode(
+                model: deviceDisplayName,
+                mode: .staticColor
+            )
+        }
         guard supportedSidelightModes.contains(.staticColor) else {
             throw Air75LightingError.unsupportedSidelightMode(
                 model: deviceDisplayName,

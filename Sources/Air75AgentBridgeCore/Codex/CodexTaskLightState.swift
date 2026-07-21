@@ -199,6 +199,11 @@ public enum CodexTaskLightAggregator {
 public enum CodexRolloutStatusParser {
     public static let completionVisibleDuration: TimeInterval = 60
     public static let errorVisibleDuration: TimeInterval = 120
+    /// A rollout can end without a terminal event after Codex or the Mac is
+    /// force-quit. Treating that last reasoning/tool event as live forever is
+    /// worse than allowing a very long quiet operation to refresh on its next
+    /// event. Thirty minutes preserves long work while clearing abandoned runs.
+    public static let reasoningStaleDuration: TimeInterval = 30 * 60
 
     public static func parse(data: Data, now: Date = Date()) -> CodexTaskLightSnapshot {
         applyDecay(to: parseRaw(data: data), now: now)
@@ -291,9 +296,20 @@ public enum CodexRolloutStatusParser {
 
     /// Completed tasks stay green for 60 seconds and failed tasks stay red for
     /// 120 seconds, then both settle back to idle.
-    public static func applyDecay(to snapshot: CodexTaskLightSnapshot, now: Date = Date()) -> CodexTaskLightSnapshot {
+    public static func applyDecay(
+        to snapshot: CodexTaskLightSnapshot,
+        now: Date = Date(),
+        preserveUnreadCompletion: Bool = false
+    ) -> CodexTaskLightSnapshot {
         var decayed = snapshot
-        if decayed.state == .complete, let eventDate = decayed.eventDate,
+        if decayed.state == .reasoning {
+            guard let eventDate = decayed.eventDate,
+                  now.timeIntervalSince(eventDate) <= reasoningStaleDuration else {
+                decayed.state = .idle
+                return decayed
+            }
+        } else if decayed.state == .complete, !preserveUnreadCompletion,
+                  let eventDate = decayed.eventDate,
            now.timeIntervalSince(eventDate) > completionVisibleDuration {
             decayed.state = .idle
         } else if decayed.state == .error, let eventDate = decayed.eventDate,

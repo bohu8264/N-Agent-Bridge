@@ -15,7 +15,8 @@ if let argumentIndex = CommandLine.arguments.firstIndex(of: "--verify-app-bundle
         ("Air100V3.json", "nuphy.air100-v3"),
         ("Kick75.json", "nuphy.kick75"),
         ("Node75.json", "nuphy.node75"),
-        ("Node100.json", "nuphy.node100")
+        ("Node100.json", "nuphy.node100"),
+        ("Node100LPANSI.json", "nuphy.node100-lp-ansi")
     ]
     let profileBundleURL = appBundle.resourceURL?
         .appendingPathComponent("Air75AgentBridge_Air75AgentBridgeCore.bundle", isDirectory: true)
@@ -268,6 +269,24 @@ check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07,
       "Kick75 Space resolves through the official visible-key order")
 check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07, usage: 0x4F) == 79,
       "Kick75 Right Arrow resolves through the official visible-key order")
+check(SignalLightLayout.index(
+    layoutID: "nuphy.node100-lp-ansi-d8", usagePage: 0x07, usage: 0x68
+) == 1, "Node100 LP ANSI Bridge F13 resolves to verified physical F1 light")
+check(SignalLightLayout.index(
+    layoutID: "nuphy.node100-lp-ansi-d8", usagePage: 0x07, usage: 0x73
+) == 12, "Node100 LP ANSI Bridge F24 resolves to verified physical F12 light")
+check(SignalLightLayout.index(
+    layoutID: "nuphy.node100-lp-ansi-d8", usagePage: 0x07, usage: 0x14
+) == 44, "Node100 LP ANSI Q resolves to official and hardware-verified light index")
+check(SignalLightLayout.index(
+    layoutID: "nuphy.node100-lp-ansi-d8", usagePage: 0x07, usage: 0x1E
+) == 25, "Node100 LP ANSI number 1 resolves through official layout")
+check(SignalLightLayout.index(
+    layoutID: "nuphy.node100-lp-ansi-d8", usagePage: 0x07, usage: 0x2C
+) == 100, "Node100 LP ANSI Space resolves through official layout")
+check(SignalLightLayout.index(
+    layoutID: "nuphy.node100-lp-ansi-d8", usagePage: 0x07, usage: 0x4F
+) == 105, "Node100 LP ANSI Right Arrow resolves through official layout")
 check(Air75V3LightingController.escapeSignalLightIndex == 0,
       "legacy task color can be explicitly cleared from Esc")
 
@@ -383,6 +402,26 @@ check(CodexRolloutStatusParser.applyDecay(to: freshError, now: rolloutNow).state
 let staleError = CodexTaskLightSnapshot(threadID: "t", state: .error, eventDate: rolloutNow.addingTimeInterval(-121))
 check(CodexRolloutStatusParser.applyDecay(to: staleError, now: rolloutNow).state == .idle,
       "error decays to idle after 120s")
+let freshReasoning = CodexTaskLightSnapshot(
+    threadID: "t", state: .reasoning,
+    eventDate: rolloutNow.addingTimeInterval(-CodexRolloutStatusParser.reasoningStaleDuration + 1)
+)
+check(CodexRolloutStatusParser.applyDecay(to: freshReasoning, now: rolloutNow).state == .reasoning,
+      "recent reasoning remains blue")
+let staleReasoning = CodexTaskLightSnapshot(
+    threadID: "t", state: .reasoning,
+    eventDate: rolloutNow.addingTimeInterval(-CodexRolloutStatusParser.reasoningStaleDuration - 1)
+)
+check(CodexRolloutStatusParser.applyDecay(
+    to: staleReasoning,
+    now: rolloutNow,
+    preserveUnreadCompletion: true
+).state == .idle, "stale unread reasoning cannot remain blue forever")
+check(CodexRolloutStatusParser.applyDecay(
+    to: staleComplete,
+    now: rolloutNow,
+    preserveUnreadCompletion: true
+).state == .complete, "unread completion may remain green")
 
 // 侧灯聚合：显示六任务里最需要关注的状态。
 check(CodexTaskLightAggregator.aggregate([]) == .idle, "aggregate empty is idle")
@@ -488,6 +527,13 @@ configuration.enabled = true
 do {
     try store.save(configuration)
     check(store.load().enabled, "configuration atomic round-trip")
+    var indicatorConfiguration = BridgeConfiguration()
+    check(!indicatorConfiguration.hasInitializedIndicatorMode(for: "nuphy.air75-v3"),
+          "indicator default begins uninitialized")
+    indicatorConfiguration.markIndicatorModeInitialized(for: "nuphy.air75-v3")
+    try store.save(indicatorConfiguration)
+    check(store.load().hasInitializedIndicatorMode(for: "nuphy.air75-v3"),
+          "indicator default persists per model")
     var persistedKick = BridgeConfiguration()
     var persistedKickBindings = BridgeConfiguration.defaultBindings
     persistedKickBindings[0] = KeyBinding(
@@ -508,7 +554,7 @@ do {
     }
     try store.save(legacy)
     let migrated = store.load()
-    check(migrated.schemaVersion == 11
+    check(migrated.schemaVersion == 12
             && migrated.sidelightRestoredAfterSignalLights == false
             && migrated.resolvedAgentSourceMode == .recent
             && migrated.keyBindings.map(\.usage) == Array(0x3A...0x45),
@@ -520,7 +566,7 @@ do {
     corrupted.keyBindings[0].usage = KeyBinding.hidArrayUsageSentinel
     try store.save(corrupted)
     let repaired = store.load()
-    check(repaired.schemaVersion == 11
+    check(repaired.schemaVersion == 12
             && repaired.sidelightRestoredAfterSignalLights == false
             && repaired.keyBindings[0].usage == 0x68
             && repaired.keyBindings.dropFirst().map(\.usage) == Array(0x69...0x73),
@@ -535,7 +581,8 @@ do {
     check(DeviceProfileRegistry.loadBundled().profile(id: "nuphy.air75-v3") != nil,
           "loads bundled model profile registry")
     let bundledProfiles = DeviceProfileRegistry.loadBundled()
-    check(["nuphy.air65-v3", "nuphy.air100-v3", "nuphy.kick75", "nuphy.node75", "nuphy.node100"]
+    check(["nuphy.air65-v3", "nuphy.air100-v3", "nuphy.kick75", "nuphy.node75",
+           "nuphy.node100", "nuphy.node100-lp-ansi"]
         .allSatisfy { bundledProfiles.profile(id: $0) != nil },
           "loads all requested NuPhy software-mode profiles")
     let bundledKickMatch = bundledProfiles.bestMatch(
@@ -545,6 +592,13 @@ do {
     check(bundledKickMatch?.profile.profileID == "nuphy.kick75"
             && bundledKickMatch?.confidence == 100,
           "bundled profile recognizes attached Kick75 IO identity")
+    let bundledNode100LPMatch = bundledProfiles.bestMatch(
+        vendorID: 0x19F5, productID: 0x1037, product: "Node 100 LP", manufacturer: "NuPhy",
+        transport: .usb, usagePage: 1, usage: 6, confirmedFingerprint: nil
+    )
+    check(bundledNode100LPMatch?.profile.profileID == "nuphy.node100-lp-ansi"
+            && bundledNode100LPMatch?.confidence == 100,
+          "bundled profile recognizes Node100 LP ANSI exact identity")
     check(KeyboardDriverRegistry.keymapDriver(for: .air75V3Fallback) != nil,
           "registers verified Air75 V3 keymap driver")
     check(KeyboardDriverRegistry.keymapDriver(for: bundledProfiles.profile(id: "nuphy.kick75")) != nil,
@@ -562,6 +616,24 @@ do {
     check(KeyboardDriverRegistry.sleepDriver(
             for: bundledProfiles.profile(id: "nuphy.kick75"))?.profileID == "nuphy.kick75",
           "registers separately verified Kick75 F3/F5 sleep driver")
+    check(KeyboardDriverRegistry.keymapDriver(
+            for: bundledProfiles.profile(id: "nuphy.node100-lp-ansi")) is Node100LPANSIKeymapController,
+          "registers hardware-verified Node100 LP ANSI keymap driver")
+    let node100Lighting = KeyboardDriverRegistry.lightingDriver(
+        for: bundledProfiles.profile(id: "nuphy.node100-lp-ansi")
+    )
+    check(node100Lighting?.profileID == "nuphy.node100-lp-ansi"
+            && node100Lighting?.supportsFullLightingControl == true,
+          "registers hardware-verified Node100 LP ANSI D6 and D8 lighting driver")
+    check((node100Lighting as? Air75V3LightingController)?.writableLightingHandles == [0],
+          "limits Node100 LP ANSI D6 writes to verified handle zero")
+    check(node100Lighting?.supportedBacklightModes == [.staticColor, .breathing, .signalIndicator]
+            && node100Lighting?.supportedSidelightModes == [.staticColor, .breathing],
+          "limits Node100 LP ANSI lighting to verified backlight and dot-matrix modes")
+    check(KeyboardDriverRegistry.sleepDriver(
+            for: bundledProfiles.profile(id: "nuphy.node100-lp-ansi"))?.profileID
+            == "nuphy.node100-lp-ansi",
+          "registers separately verified Node100 LP ANSI F3/F5 sleep driver")
     check(KeyboardDriverRegistry.lightingDriver(for: .air75V3Fallback)?.supportedSidelightModes
             == Air75SidelightMode.allCases,
           "keeps all five Air75 V3 sidelight modes")
@@ -695,6 +767,68 @@ do {
           "Kick75 rejects an unexpected matrix before any write")
 } catch {
     check(false, "Kick75 hardware profile transform: \(error.localizedDescription)")
+}
+
+do {
+    let entriesPerLayer = 119
+    var original = [UInt8](repeating: 0, count: Node100LPANSIKeymapController.keymapByteCount)
+    func setNode(_ value: UInt16, layer: Int, entry: Int) {
+        let offset = (layer * entriesPerLayer + entry) * 2
+        original[offset] = UInt8(value >> 8)
+        original[offset + 1] = UInt8(value & 0xFF)
+    }
+    func nodeCode(_ bytes: [UInt8], layer: Int, entry: Int) -> UInt16 {
+        let offset = (layer * entriesPerLayer + entry) * 2
+        return (UInt16(bytes[offset]) << 8) | UInt16(bytes[offset + 1])
+    }
+    let macRow: [UInt16] = [
+        0x0069, 0x006A, 0x7E06, 0x7E07, 0x7E08, 0x7E16,
+        0x00AC, 0x00AE, 0x00AB, 0x00A8, 0x00AA, 0x00A9,
+    ]
+    for (offset, value) in macRow.enumerated() { setNode(value, layer: 0, entry: offset + 1) }
+    for (offset, value) in (0x003A...0x0045).enumerated() {
+        setNode(UInt16(value), layer: 4, entry: offset + 1)
+    }
+    for layer in [0, 4] {
+        setNode(0x00A8, layer: layer, entry: 115)
+        setNode(0x00AB, layer: layer, entry: 116)
+        setNode(0x00AA, layer: layer, entry: 117)
+        setNode(0x00A9, layer: layer, entry: 118)
+    }
+    setNode(0x00A8, layer: 1, entry: 115)
+    setNode(0x0069, layer: 1, entry: 117)
+    setNode(0x006A, layer: 1, entry: 118)
+
+    let candidate = try Node100LPANSIKeymapController().makeBridgeProfile(from: original)
+    check((1...12).map { nodeCode(candidate, layer: 0, entry: $0) }
+            == Array(0x68...0x73).map(UInt16.init)
+            && (1...12).map { nodeCode(candidate, layer: 4, entry: $0) }
+            == Array(0x68...0x73).map(UInt16.init),
+          "Node100 LP ANSI physical F rows become F13-F24")
+    check(nodeCode(candidate, layer: 0, entry: 115) == 0x0048
+            && nodeCode(candidate, layer: 0, entry: 116) == 0x00AB
+            && nodeCode(candidate, layer: 0, entry: 117) == 0x0047
+            && nodeCode(candidate, layer: 0, entry: 118) == 0x0046,
+          "Node100 LP ANSI touch gestures become unique reasoning controls")
+    check(nodeCode(candidate, layer: 1, entry: 115) == 0x00A8
+            && nodeCode(candidate, layer: 1, entry: 117) == 0x0069
+            && nodeCode(candidate, layer: 1, entry: 118) == 0x006A,
+          "Node100 LP ANSI Fn touch gestures remain native")
+    let changedOffsets = Set(original.indices.filter { original[$0] != candidate[$0] })
+    var expectedEntries: Set<Int> = []
+    for layer in [0, 4] {
+        for entry in 1...12 { expectedEntries.insert(layer * entriesPerLayer + entry) }
+        for entry in [115, 117, 118] { expectedEntries.insert(layer * entriesPerLayer + entry) }
+    }
+    check(changedOffsets.allSatisfy { expectedEntries.contains($0 / 2) },
+          "Node100 LP ANSI transform leaves unrelated and Fn bytes untouched")
+    check(Node100LPANSIKeymapController.hasBridgeProfile(candidate)
+            && !Node100LPANSIKeymapController.hasBridgeProfile(original)
+            && Node100LPANSIKeymapController.isPlausibleKeymap(original)
+            && Node100LPANSIKeymapController.isPlausibleKeymap(candidate),
+          "Node100 LP ANSI accepts only verified original or Bridge layouts")
+} catch {
+    check(false, "Node100 LP ANSI hardware profile transform: \(error.localizedDescription)")
 }
 
 if CommandLine.arguments.contains("--software-only") {
