@@ -82,20 +82,6 @@ extension Air75V3KeymapController: KeyboardKeymapDriver {
     public func containsBridgeProfile(_ bytes: [UInt8]) -> Bool { Self.hasBridgeProfile(bytes) }
 }
 
-extension Kick75KeymapController: KeyboardKeymapDriver {
-    public var profileID: String { "nuphy.kick75" }
-    public var keymapSize: Int { Self.keymapByteCount }
-    public func isPlausibleKeymap(_ bytes: [UInt8]) -> Bool { Self.isPlausibleKeymap(bytes) }
-    public func containsBridgeProfile(_ bytes: [UInt8]) -> Bool { Self.hasBridgeProfile(bytes) }
-}
-
-extension Node100LPANSIKeymapController: KeyboardKeymapDriver {
-    public var profileID: String { "nuphy.node100-lp-ansi" }
-    public var keymapSize: Int { Self.keymapByteCount }
-    public func isPlausibleKeymap(_ bytes: [UInt8]) -> Bool { Self.isPlausibleKeymap(bytes) }
-    public func containsBridgeProfile(_ bytes: [UInt8]) -> Bool { Self.hasBridgeProfile(bytes) }
-}
-
 extension Air75V3LightingController: KeyboardLightingDriver {}
 
 extension Air75V3LightingController: KeyboardSleepDriver {}
@@ -104,34 +90,9 @@ extension Air75V3LightingController: KeyboardSleepDriver {}
 /// capability. A JSON file alone can enable safe software recognition, but it
 /// cannot authorize a vendor HID write path.
 public enum KeyboardDriverRegistry {
-    private static func kick75LightingController() -> Air75V3LightingController {
-        Air75V3LightingController(
-            profileID: "nuphy.kick75",
-            deviceDisplayName: "Kick75",
-            wiredProductID: Kick75KeymapController.productID,
-            supportsFullLightingControl: true,
-            writableLightingHandles: [0],
-            supportedSidelightModes: [.flowing, .neon, .staticColor, .breathing]
-        )
-    }
-
-    private static func node100LPANSILightingController() -> Air75V3LightingController {
-        Air75V3LightingController(
-            profileID: "nuphy.node100-lp-ansi",
-            deviceDisplayName: "Node100 LP ANSI",
-            wiredProductID: Node100LPANSIKeymapController.productID,
-            supportsFullLightingControl: true,
-            writableLightingHandles: [0],
-            supportedBacklightModes: [.staticColor, .breathing, .signalIndicator],
-            supportedSidelightModes: [.staticColor, .breathing]
-        )
-    }
-
     public static func keymapDriver(for profile: DeviceProfile?) -> (any KeyboardKeymapDriver)? {
         switch profile?.capabilities?.keymapDriverID {
         case "nuphy.s4.air75v3-keymap": return Air75V3KeymapController()
-        case "nuphy.s4.kick75-keymap": return Kick75KeymapController()
-        case "nuphy.s4.node100-lp-ansi-keymap": return Node100LPANSIKeymapController()
         default: return nil
         }
     }
@@ -139,10 +100,6 @@ public enum KeyboardDriverRegistry {
     public static func lightingDriver(for profile: DeviceProfile?) -> (any KeyboardLightingDriver)? {
         switch profile?.capabilities?.lightingDriverID {
         case "nuphy.s4.17byte-lighting": return Air75V3LightingController()
-        case "nuphy.s4.kick75-signal-lighting":
-            return kick75LightingController()
-        case "nuphy.s4.node100-lp-ansi-lighting":
-            return node100LPANSILightingController()
         default: return nil
         }
     }
@@ -150,9 +107,6 @@ public enum KeyboardDriverRegistry {
     public static func sleepDriver(for profile: DeviceProfile?) -> (any KeyboardSleepDriver)? {
         switch profile?.capabilities?.sleepDriverID {
         case "nuphy.s4.air75v3-sleep": return Air75V3LightingController()
-        case "nuphy.s4.kick75-sleep": return kick75LightingController()
-        case "nuphy.s4.node100-lp-ansi-sleep":
-            return node100LPANSILightingController()
         default: return nil
         }
     }

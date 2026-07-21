@@ -1,7 +1,7 @@
 # Product
 
-N Agent Bridge 是面向 NuPhy 键盘的第三方 Codex/Claude Code 控制层。型号 Profile 与硬件驱动分离，当前完整验证 NuPhy Air75 V3；新型号只有在协议和恢复路径通过实机验证后才开放硬件写入。首次 USB 用于可信识别、备份与板载 Profile，日常按键使用可切换到 Bluetooth。
+N Agent Bridge 是 NuPhy Air75 V3 ANSI 的第三方 Codex 控制应用。它把物理 F 区和旋钮映射为 Codex 动作，并用六颗可自定义实体键显示六个 Agent 的实时状态：空闲、思考、完成、确认和报错。
 
-核心体验：原生 SwiftUI 设置、菜单栏后台、6 个 Agent Slot、命令键、方向工作流、旋钮、Push to Talk、Codex 状态与克制浮层。应用完全退出后停止监听；不处理其他键盘，不记录普通文字。
+应用原生使用 SwiftUI，不记录普通文字输入；停止控制或退出后立即解除键盘事件拦截。首次 USB-C 配置会备份完整板载键位、安装 F13–F24 专用事件并回读验证。所有灯光写入都限定 Air75 V3 已验证接口，并在失败时恢复。
 
-产品不会冒充 OpenAI 官方设备，也不会复制 Work Louder 固件或设备身份。未验证能力始终在 UI 标为“未验证”或“协议阻塞”。
+本项目与 OpenAI、Codex、NuPhy 均无隶属关系，不冒充官方硬件。当前版本不支持其他 NuPhy 型号；后续型号必须重新完成协议、灯位、键位长度、备份和恢复实机验证后才能加入。

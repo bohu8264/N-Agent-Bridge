@@ -398,10 +398,8 @@ public struct BridgeConfiguration: Codable, Sendable {
     public var hardwareProfileID: String?
     public var hardwareProfileBackupName: String?
     public var boundFingerprint: DeviceFingerprint?
-    /// Hardware profiles live on each physical keyboard independently. Keep
-    /// one recovery record per model so configuring a Kick75 never discards
-    /// the verified Air75 V3 backup (and vice versa). The scalar fields above
-    /// remain decode-only compatibility for schema 1-10.
+    /// Hardware profile records are kept as a dictionary for backward-compatible
+    /// decoding. The current product accepts only the Air75 V3 profile.
     public var hardwareProfileStates: [String: InstalledHardwareProfileState]?
     public var confirmedBluetoothFingerprint: DeviceFingerprint?
     public var keyBindings: [KeyBinding] = Self.defaultBindings
@@ -585,9 +583,7 @@ public struct BridgeConfiguration: Codable, Sendable {
         }
     }
 
-    /// Resolves usages for the keyboard that is actually connected. A
-    /// detached Air75 V3 can still own an F13-F24 hardware layer; a Kick75 in
-    /// software mode must nevertheless use ordinary F1-F12 events.
+    /// Resolves usages for the Air75 V3 that is actually connected.
     public func bindings(for profileID: String?) -> [KeyBinding] {
         let profileInstalled = hasInstalledHardwareProfile(for: profileID)
         if let profileID, let stored = modelKeyBindings?[profileID], !stored.isEmpty {

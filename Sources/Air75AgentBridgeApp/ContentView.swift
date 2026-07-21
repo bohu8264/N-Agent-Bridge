@@ -971,14 +971,6 @@ struct LightingView: View {
                                     .help("侧灯 · \(item.name)")
                                 }
                             }
-                            if store.sidelightModeNeedsHardwareRecovery {
-                                Label(
-                                    "Kick75 当前侧灯模式不受支持，请按一次 Fn + M + ← 恢复",
-                                    systemImage: "exclamationmark.triangle"
-                                )
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                            }
                     }
                     .disabled(!store.lightingAvailable || store.lightingBusy || !store.fullLightingControlSupported)
                 }
@@ -1443,7 +1435,7 @@ private let backlightColors: [(hex: String, name: String)] = [
 ]
 
 private var appVersion: String {
-    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.13.5"
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.14.0"
 }
 
 private func deviceConnectionText(_ device: DeviceSnapshot?) -> String {

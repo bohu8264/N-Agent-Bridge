@@ -1,7 +1,7 @@
 # Architecture
 
 ```text
-Supported NuPhy keyboard (USB / Bluetooth / 2.4G)
+NuPhy Air75 V3 ANSI (USB / Bluetooth / 2.4G)
   -> HIDDeviceManager + DeviceFingerprintMatcher
   -> MappingEngine
   -> BridgeStore / AgentState
@@ -20,6 +20,6 @@ Codex Agent 槽位不再等同于侧栏第 1–6 行。`CodexThreadIndexReader` 
 
 `CodexDesktopConfirmationObserver` 补齐 rollout 缺失的 Desktop 表单确认：辅助功能遍历时只读取按钮角色/标签，活动日志解析器只接受 `active` 与 `conversationId` 字段；匹配到确认组合后，`CodexDesktopStatusObserver` 对精确线程叠加 `waitingForConfirmation`。焦点按钮走高频轻量路径，完整控件树只低频复核，避免常驻高 CPU。
 
-实体键绑定同时保存可选的 `signalLightIndex`。Air75 V3 使用 NuPhyIO 官方 ANSI 布局与固件 skip 规则，把 HID Usage 转成 D8 灯位；动作换键时灯位一起交换。其他型号没有经过实机确认的布局或 D8 驱动时保持 nil，硬件层不会猜测写入。
+实体键绑定同时保存可选的 `signalLightIndex`。Air75 V3 使用 NuPhyIO 官方 ANSI 布局与固件 skip 规则，把 HID Usage 转成 D8 灯位；动作换键时灯位一起交换。
 
-设备识别要求 VID/PID、产品别名、制造商、Transport、Usage、序列号与已确认蓝牙别名组合；名称从不单独构成可信匹配。IOHIDManager 不以 seize 方式打开设备，默认只发布 F1–F12、已学习 Usage、候选旋钮 Consumer Usage 或 vendor-defined Usage。灯光控制器使用更严格的精确 USB 身份和配置接口匹配，不与普通键盘输入接口混用。
+设备识别要求 Air75 V3 的 VID/PID、产品别名、制造商、Transport、Usage、序列号与已确认蓝牙别名组合；名称从不单独构成可信匹配。IOHIDManager 不以 seize 方式打开设备，默认只发布 F1–F12、已学习 Usage、候选旋钮 Consumer Usage 或 vendor-defined Usage。灯光控制器使用更严格的精确 USB 身份和配置接口匹配，不与普通键盘输入接口混用。S4 管理事务由进程级协调器串行化，每个逻辑事务先执行 0xEE 会话握手。

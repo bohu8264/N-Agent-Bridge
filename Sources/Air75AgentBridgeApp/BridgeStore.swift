@@ -288,17 +288,10 @@ final class BridgeStore: ObservableObject {
     }
 
     var reasoningControlName: String {
-        currentDevice?.profileID == "nuphy.node100-lp-ansi" ? "触控条" : "旋钮"
+        "旋钮"
     }
 
     var reasoningControlGestures: [(title: String, detail: String)] {
-        if currentDevice?.profileID == "nuphy.node100-lp-ansi" {
-            return [
-                ("向左滑动", "降低推理深度"),
-                ("双击触控条", "打开模型与推理"),
-                ("向右滑动", "提高推理深度"),
-            ]
-        }
         return [
             ("向左旋转", "降低推理深度"),
             ("按下旋钮", "打开模型与推理"),
@@ -358,7 +351,7 @@ final class BridgeStore: ObservableObject {
     }
 
     var secondaryLightingZoneName: String {
-        currentLightingProfile?.profileID == "nuphy.node100-lp-ansi" ? "点阵灯效" : "普通侧灯灯效"
+        "普通侧灯灯效"
     }
 
     var sidelightModeNeedsHardwareRecovery: Bool {
@@ -463,9 +456,7 @@ final class BridgeStore: ObservableObject {
         let targetProfileID = controller.profileID
         let currentProfileState = currentConfiguration.hardwareProfileState(for: targetProfileID)
         let targetModelName = usbDevice.modelName ?? usbDevice.productName
-        let defaultIndicatorProfiles: Set<String> = [
-            "nuphy.air75-v3", "nuphy.kick75", "nuphy.node100-lp-ansi"
-        ]
+        let defaultIndicatorProfiles: Set<String> = ["nuphy.air75-v3"]
         let lightingDriver = KeyboardDriverRegistry.lightingDriver(for: targetProfile)
         let shouldInitializeIndicatorMode = defaultIndicatorProfiles.contains(targetProfileID)
             && !currentConfiguration.hasInitializedIndicatorMode(for: targetProfileID)
@@ -533,7 +524,7 @@ final class BridgeStore: ObservableObject {
                 configuration.codexModeEnabled = true
                 configuration.mappingPausedByUser = false
                 let normalizedBindings = BridgeConfiguration.repairingKnownCorruptedDefaultLayout(
-                    configuration.bindings(for: targetProfileID),
+                    self.configuration.bindings(for: targetProfileID),
                     hardwareProfileInstalled: false
                 )
                 let installedBindings = BridgeConfiguration.bindingsForInstalledHardwareProfile(
@@ -1146,10 +1137,6 @@ final class BridgeStore: ObservableObject {
         let connection: KeyboardLightingConnection
         switch interface.productID {
         case Air75V3LightingController.productID:
-            connection = .usbCable
-        case Kick75KeymapController.productID:
-            connection = .usbCable
-        case Node100LPANSIKeymapController.productID:
             connection = .usbCable
         case Air75V3LightingController.dongleProductID:
             connection = .twoPointFourGHzReceiver

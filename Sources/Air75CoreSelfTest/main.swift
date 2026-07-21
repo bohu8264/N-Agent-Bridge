@@ -9,15 +9,7 @@ if let argumentIndex = CommandLine.arguments.firstIndex(of: "--verify-app-bundle
         fputs("Invalid app bundle: \(appPath)\n", stderr)
         exit(EXIT_FAILURE)
     }
-    let expectedProfiles = [
-        ("Air75V3.json", "nuphy.air75-v3"),
-        ("Air65V3.json", "nuphy.air65-v3"),
-        ("Air100V3.json", "nuphy.air100-v3"),
-        ("Kick75.json", "nuphy.kick75"),
-        ("Node75.json", "nuphy.node75"),
-        ("Node100.json", "nuphy.node100"),
-        ("Node100LPANSI.json", "nuphy.node100-lp-ansi")
-    ]
+    let expectedProfiles = [("Air75V3.json", "nuphy.air75-v3")]
     let profileBundleURL = appBundle.resourceURL?
         .appendingPathComponent("Air75AgentBridge_Air75AgentBridgeCore.bundle", isDirectory: true)
     let registry = DeviceProfileRegistry.loadBundled(applicationBundle: appBundle)
@@ -151,6 +143,8 @@ check(Air75V3LightingController.preferredConnection(
 ) == .usbCable, "wired lighting connection takes priority over U1 dongle")
 check(Air75V3LightingController.preferredConnection(forProductIDs: [0xFFFF]) == nil,
       "unknown receiver cannot gain lighting write capability")
+check(Air75V3LightingController().writableLightingHandles == [0],
+      "Air75 V3 writes only the active macOS lighting profile")
 var customBindings = BridgeConfiguration.defaultBindings
 customBindings[0].usage = 0x1E
 let installedBindings = BridgeConfiguration.bindingsForInstalledHardwareProfile(customBindings)
@@ -159,37 +153,14 @@ check(installedBindings[0].usage == 0x1E && installedBindings[1].usage == 0x69,
 check(BridgeConfiguration.bindingsForOriginalHardwareProfile(installedBindings).map(\.usage)
         == customBindings.map(\.usage),
       "custom key survives original-profile restoration")
-var multiModelBindings = BridgeConfiguration()
-multiModelBindings.setHardwareProfileState(
+var airConfiguration = BridgeConfiguration()
+airConfiguration.setHardwareProfileState(
     InstalledHardwareProfileState(installed: true, backupName: "air-original.json"),
     for: "nuphy.air75-v3"
 )
-multiModelBindings.setBindings(BridgeConfiguration.hardwareProfileBindings, for: "nuphy.air75-v3")
-check(multiModelBindings.bindings(for: "nuphy.air75-v3").map(\.usage) == Array(0x68...0x73),
+airConfiguration.setBindings(BridgeConfiguration.hardwareProfileBindings, for: "nuphy.air75-v3")
+check(airConfiguration.bindings(for: "nuphy.air75-v3").map(\.usage) == Array(0x68...0x73),
       "keeps installed Air75 hardware-profile usages")
-check(multiModelBindings.bindings(for: "nuphy.kick75").map(\.usage) == Array(0x3A...0x45),
-      "derives physical F1-F12 for connected Kick75")
-let kickProfile = DeviceProfile(
-    schemaVersion: 2, model: "NuPhy Kick75",
-    usbIdentities: [.init(vendorID: 0x19F5, productID: 0x1026)],
-    bluetoothVendorIDs: [0x07D7, 0x19F5], productAliases: ["Kick75", "Kick75 IO"],
-    manufacturerAliases: ["NuPhy"], allowedUsagePages: [1, 7, 12],
-    specialUsages: Array(0x3A...0x45), id: "nuphy.kick75", protocolFamily: .nuphyS4,
-    capabilities: .init(hasKnob: true, hasSidelight: true)
-)
-let kickRegistry = DeviceProfileRegistry(profiles: [profile, kickProfile])
-let kickMatch = kickRegistry.bestMatch(
-    vendorID: 0x19F5, productID: 0x1026, product: "Kick75 IO", manufacturer: "NuPhy",
-    transport: .usb, usagePage: 1, usage: 6, confirmedFingerprint: nil
-)
-check(kickMatch?.profile.profileID == "nuphy.kick75" && kickMatch?.confidence == 100,
-      "recognizes attached Kick75 by exact developer VID/PID")
-var kickBindings = BridgeConfiguration.defaultBindings
-kickBindings[0] = KeyBinding(usagePage: 0x07, usage: 0x1E, action: .agent1)
-multiModelBindings.setBindings(kickBindings, for: "nuphy.kick75")
-check(multiModelBindings.bindings(for: "nuphy.kick75")[0].usage == 0x1E
-        && multiModelBindings.bindings(for: "nuphy.air75-v3")[0].usage == 0x68,
-      "stores per-model custom key bindings independently")
 check(!KeyBinding.isSupportedInputSource(
     usagePage: 0x07,
     usage: KeyBinding.hidArrayUsageSentinel
@@ -251,46 +222,59 @@ let d8Example = [
 ].flatMap(\.encodedBytes)
 check(d8Example == [0x00, 0xFF, 0x00, 0x00, 0x01, 0x00, 0xFF, 0x00],
       "D8 signal light payload matches firmware protocol")
+
+let handshakeChallenge = (0..<NuPhyS4ProtocolCodec.maximumPayloadSize).map { UInt8($0) }
+let deterministicHandshake = NuPhyS4ProtocolCodec.Handshake(challenge: handshakeChallenge)
+check(deterministicHandshake.sessionKey == 20,
+      "S4 handshake derives the official byte-20 session key")
+check(deterministicHandshake.report[0] == 0x55
+        && deterministicHandshake.report[1] == 0xEE
+        && deterministicHandshake.report[28] == 20
+        && deterministicHandshake.report[3] == NuPhyS4ProtocolCodec.checksum(deterministicHandshake.report),
+      "S4 handshake report matches the official 0xEE layout")
+
+let decodedLightState: [UInt8] = [
+    0x15, 0x64, 0x03, 0x00, 0x00, 0x00, 0xC5, 0x5A, 0xF1,
+    0x03, 0x00, 0x00, 0x01, 0x09, 0xFF, 0x00, 0x00,
+]
+let testSessionKey: UInt8 = 0xF8
+func encryptedD5Response(encryptsHeader: Bool) -> [UInt8] {
+    var response = [UInt8](repeating: 0, count: NuPhyS4ProtocolCodec.reportSize)
+    response[0] = 0xAA
+    response[1] = 0xD5
+    let header: [UInt8] = [17, 0, 0, 0]
+    response.replaceSubrange(4...7, with: encryptsHeader ? header.map { $0 ^ testSessionKey } : header)
+    response.replaceSubrange(8..<(8 + decodedLightState.count),
+                             with: decodedLightState.map { $0 ^ testSessionKey })
+    response[3] = NuPhyS4ProtocolCodec.checksum(response)
+    return response
+}
+do {
+    let legacy = try NuPhyS4ProtocolCodec.decodeResponse(
+        encryptedD5Response(encryptsHeader: true),
+        command: 0xD5, length: 17, address: 0, handle: 0,
+        sessionKey: testSessionKey
+    )
+    check(Array(legacy[8..<25]) == decodedLightState,
+          "S4 decoder accepts legacy encrypted header and payload")
+    let firmware10166 = try NuPhyS4ProtocolCodec.decodeResponse(
+        encryptedD5Response(encryptsHeader: false),
+        command: 0xD5, length: 17, address: 0, handle: 0,
+        sessionKey: testSessionKey
+    )
+    check(Array(firmware10166[8..<25]) == decodedLightState,
+          "S4 decoder accepts firmware 1.0.16.6 plain header with encrypted payload")
+} catch {
+    check(false, "S4 encrypted response compatibility: \(error)")
+}
 check(Air75V3LightingController.taskSignalLightIndices == [1, 2, 3, 4, 5, 6],
       "Air75 V3 F1-F6 use firmware indicator indexes 1-6; index 0 is Esc")
 check(SignalLightLayout.staleManagedIndices(layoutID: "nuphy.air75-v3.ansi-d8") == [30],
       "Air75 V3 clears the stale Tab indicator left by the 0.13.1 binding bug")
-check(SignalLightLayout.staleManagedIndices(layoutID: "nuphy.kick75.ansi-d8").isEmpty,
-      "Air75 V3 stale Tab cleanup does not affect Kick75")
 check(SignalLightLayout.index(layoutID: "nuphy.air75-v3.ansi-d8", usagePage: 0x07, usage: 0x1E) == 16,
       "Air75 V3 number 1 resolves to official-layout light index")
 check(SignalLightLayout.index(layoutID: "nuphy.air75-v3.ansi-d8", usagePage: 0x07, usage: 0x68) == 1,
       "Air75 V3 Bridge F13 source resolves to physical F1 light")
-check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07, usage: 0x68) == 1,
-      "Kick75 Bridge F13 source resolves to verified physical F1 light")
-check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07, usage: 0x73) == 12,
-      "Kick75 Bridge F24 source resolves to verified physical F12 light")
-check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07, usage: 0x14) == 30,
-      "Kick75 Q resolves through the official layout after three hidden encoder entries")
-check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07, usage: 0x04) == 45,
-      "Kick75 A resolves through the official visible-key order")
-check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07, usage: 0x2C) == 74,
-      "Kick75 Space resolves through the official visible-key order")
-check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07, usage: 0x4F) == 79,
-      "Kick75 Right Arrow resolves through the official visible-key order")
-check(SignalLightLayout.index(
-    layoutID: "nuphy.node100-lp-ansi-d8", usagePage: 0x07, usage: 0x68
-) == 1, "Node100 LP ANSI Bridge F13 resolves to verified physical F1 light")
-check(SignalLightLayout.index(
-    layoutID: "nuphy.node100-lp-ansi-d8", usagePage: 0x07, usage: 0x73
-) == 12, "Node100 LP ANSI Bridge F24 resolves to verified physical F12 light")
-check(SignalLightLayout.index(
-    layoutID: "nuphy.node100-lp-ansi-d8", usagePage: 0x07, usage: 0x14
-) == 44, "Node100 LP ANSI Q resolves to official and hardware-verified light index")
-check(SignalLightLayout.index(
-    layoutID: "nuphy.node100-lp-ansi-d8", usagePage: 0x07, usage: 0x1E
-) == 25, "Node100 LP ANSI number 1 resolves through official layout")
-check(SignalLightLayout.index(
-    layoutID: "nuphy.node100-lp-ansi-d8", usagePage: 0x07, usage: 0x2C
-) == 100, "Node100 LP ANSI Space resolves through official layout")
-check(SignalLightLayout.index(
-    layoutID: "nuphy.node100-lp-ansi-d8", usagePage: 0x07, usage: 0x4F
-) == 105, "Node100 LP ANSI Right Arrow resolves through official layout")
 check(Air75V3LightingController.escapeSignalLightIndex == 0,
       "legacy task color can be explicitly cleared from Esc")
 
@@ -538,19 +522,6 @@ do {
     try store.save(indicatorConfiguration)
     check(store.load().hasInitializedIndicatorMode(for: "nuphy.air75-v3"),
           "indicator default persists per model")
-    var persistedKick = BridgeConfiguration()
-    var persistedKickBindings = BridgeConfiguration.defaultBindings
-    persistedKickBindings[0] = KeyBinding(
-        usagePage: 0x07,
-        usage: 0x14,
-        action: .agent1,
-        signalLightIndex: 30
-    )
-    persistedKick.setBindings(persistedKickBindings, for: "nuphy.kick75")
-    try store.save(persistedKick)
-    let reloadedKick = store.load().bindings(for: "nuphy.kick75")
-    check(reloadedKick[0].usage == 0x14 && reloadedKick[0].signalLightIndex == 30,
-          "persists Kick75 Q Agent binding and signal-light index")
     var legacy = BridgeConfiguration()
     legacy.schemaVersion = 1
     legacy.keyBindings = zip(0x68...0x73, BridgeConfiguration.defaultBindings.map(\.action)).map {
@@ -575,13 +546,6 @@ do {
             && repaired.keyBindings[0].usage == 0x68
             && repaired.keyBindings.dropFirst().map(\.usage) == Array(0x69...0x73),
           "repairs persisted HID array sentinel without changing other bindings")
-    var mixedKick = BridgeConfiguration()
-    mixedKick.modelKeyBindings = ["nuphy.kick75": BridgeConfiguration.defaultBindings]
-    mixedKick.modelKeyBindings?["nuphy.kick75"]?[0].usage = 0x69
-    try store.save(mixedKick)
-    let repairedKick = store.load()
-    check(repairedKick.bindings(for: "nuphy.kick75").map(\.usage) == Array(0x3A...0x45),
-          "repairs legacy mixed Kick75 F14/F2-F12 mapping")
     var mixedAir = BridgeConfiguration()
     mixedAir.schemaVersion = 12
     mixedAir.setHardwareProfileState(
@@ -602,25 +566,21 @@ do {
     var schema13MixedBindings = BridgeConfiguration.hardwareProfileBindings
     schema13MixedBindings[1].usage = 0x6A
     schema13MixedBindings[2].usage = 0x2B
-    let verifiedProfileIDs = ["nuphy.air75-v3", "nuphy.kick75", "nuphy.node100-lp-ansi"]
-    for profileID in verifiedProfileIDs {
-        schema13Mixed.setHardwareProfileState(
-            InstalledHardwareProfileState(installed: true),
-            for: profileID
-        )
-        schema13Mixed.setBindings(schema13MixedBindings, for: profileID)
-    }
+    schema13Mixed.setHardwareProfileState(
+        InstalledHardwareProfileState(installed: true),
+        for: "nuphy.air75-v3"
+    )
+    schema13Mixed.setBindings(schema13MixedBindings, for: "nuphy.air75-v3")
     try store.save(schema13Mixed)
     let schema14Repaired = store.load()
     check(schema14Repaired.schemaVersion == 14
-            && verifiedProfileIDs.allSatisfy {
-                schema14Repaired.bindings(for: $0).map(\.usage) == Array(0x68...0x73)
-            },
-          "schema 14 repairs saved mixed defaults for Air75, Kick75 and Node100")
+            && schema14Repaired.bindings(for: "nuphy.air75-v3").map(\.usage)
+                == Array(0x68...0x73),
+          "schema 14 repairs saved mixed defaults for Air75 V3")
     let freshConfiguration = BridgeConfiguration()
-    check(verifiedProfileIDs.allSatisfy {
-        freshConfiguration.bindings(for: $0).map(\.usage) == Array(0x3A...0x45)
-    }, "fresh configuration starts all verified models on physical F1-F12 before setup")
+    check(freshConfiguration.bindings(for: "nuphy.air75-v3").map(\.usage)
+            == Array(0x3A...0x45),
+          "fresh configuration starts Air75 V3 on physical F1-F12 before setup")
     var genuineCustomAir = BridgeConfiguration.hardwareProfileBindings
     genuineCustomAir[2].usage = 0x14
     check(BridgeConfiguration.repairingKnownCorruptedDefaultLayout(
@@ -629,61 +589,9 @@ do {
     ) == genuineCustomAir,
           "preserves genuine custom bindings while repairing known first-run corruption")
     check(DeviceProfileRegistry.loadBundled().profile(id: "nuphy.air75-v3") != nil,
-          "loads bundled model profile registry")
-    let bundledProfiles = DeviceProfileRegistry.loadBundled()
-    check(["nuphy.air65-v3", "nuphy.air100-v3", "nuphy.kick75", "nuphy.node75",
-           "nuphy.node100", "nuphy.node100-lp-ansi"]
-        .allSatisfy { bundledProfiles.profile(id: $0) != nil },
-          "loads all requested NuPhy software-mode profiles")
-    let bundledKickMatch = bundledProfiles.bestMatch(
-        vendorID: 0x19F5, productID: 0x1026, product: "Kick75 IO", manufacturer: "NuPhy",
-        transport: .usb, usagePage: 1, usage: 6, confirmedFingerprint: nil
-    )
-    check(bundledKickMatch?.profile.profileID == "nuphy.kick75"
-            && bundledKickMatch?.confidence == 100,
-          "bundled profile recognizes attached Kick75 IO identity")
-    let bundledNode100LPMatch = bundledProfiles.bestMatch(
-        vendorID: 0x19F5, productID: 0x1037, product: "Node 100 LP", manufacturer: "NuPhy",
-        transport: .usb, usagePage: 1, usage: 6, confirmedFingerprint: nil
-    )
-    check(bundledNode100LPMatch?.profile.profileID == "nuphy.node100-lp-ansi"
-            && bundledNode100LPMatch?.confidence == 100,
-          "bundled profile recognizes Node100 LP ANSI exact identity")
+          "loads the bundled Air75 V3 profile")
     check(KeyboardDriverRegistry.keymapDriver(for: .air75V3Fallback) != nil,
           "registers verified Air75 V3 keymap driver")
-    check(KeyboardDriverRegistry.keymapDriver(for: bundledProfiles.profile(id: "nuphy.kick75")) != nil,
-          "registers verified Kick75 keymap driver")
-    let kickLighting = KeyboardDriverRegistry.lightingDriver(
-        for: bundledProfiles.profile(id: "nuphy.kick75")
-    )
-    check(kickLighting?.profileID == "nuphy.kick75"
-            && kickLighting?.supportsFullLightingControl == true,
-          "registers hardware-verified Kick75 D6 zone and D8 status-light driver")
-    check((kickLighting as? Air75V3LightingController)?.writableLightingHandles == [0],
-          "limits Kick75 D6 writes to the verified Mac lighting handle")
-    check(kickLighting?.supportedSidelightModes == [.flowing, .neon, .staticColor, .breathing],
-          "limits Kick75 sidelight modes to the four official effects")
-    check(KeyboardDriverRegistry.sleepDriver(
-            for: bundledProfiles.profile(id: "nuphy.kick75"))?.profileID == "nuphy.kick75",
-          "registers separately verified Kick75 F3/F5 sleep driver")
-    check(KeyboardDriverRegistry.keymapDriver(
-            for: bundledProfiles.profile(id: "nuphy.node100-lp-ansi")) is Node100LPANSIKeymapController,
-          "registers hardware-verified Node100 LP ANSI keymap driver")
-    let node100Lighting = KeyboardDriverRegistry.lightingDriver(
-        for: bundledProfiles.profile(id: "nuphy.node100-lp-ansi")
-    )
-    check(node100Lighting?.profileID == "nuphy.node100-lp-ansi"
-            && node100Lighting?.supportsFullLightingControl == true,
-          "registers hardware-verified Node100 LP ANSI D6 and D8 lighting driver")
-    check((node100Lighting as? Air75V3LightingController)?.writableLightingHandles == [0],
-          "limits Node100 LP ANSI D6 writes to verified handle zero")
-    check(node100Lighting?.supportedBacklightModes == [.staticColor, .breathing, .signalIndicator]
-            && node100Lighting?.supportedSidelightModes == [.staticColor, .breathing],
-          "limits Node100 LP ANSI lighting to verified backlight and dot-matrix modes")
-    check(KeyboardDriverRegistry.sleepDriver(
-            for: bundledProfiles.profile(id: "nuphy.node100-lp-ansi"))?.profileID
-            == "nuphy.node100-lp-ansi",
-          "registers separately verified Node100 LP ANSI F3/F5 sleep driver")
     check(KeyboardDriverRegistry.lightingDriver(for: .air75V3Fallback)?.supportedSidelightModes
             == Air75SidelightMode.allCases,
           "keeps all five Air75 V3 sidelight modes")
@@ -761,124 +669,6 @@ do {
           "hardware knob unique left-click-right events")
 } catch {
     check(false, "hardware profile transform: \(error.localizedDescription)")
-}
-
-do {
-    let entriesPerLayer = 92
-    var original = [UInt8](repeating: 0, count: Kick75KeymapController.keymapByteCount)
-    func setKick(_ value: UInt16, layer: Int, entry: Int) {
-        let offset = (layer * entriesPerLayer + entry) * 2
-        original[offset] = UInt8(value >> 8)
-        original[offset + 1] = UInt8(value & 0xFF)
-    }
-    let macRow: [UInt16] = [
-        0x0069, 0x006A, 0x7E06, 0x7E07, 0x7E08, 0x7E16,
-        0x00AC, 0x00AE, 0x00AB, 0x00A8, 0x00AA, 0x00A9,
-    ]
-    for (offset, value) in macRow.enumerated() { setKick(value, layer: 0, entry: offset + 1) }
-    for (offset, value) in (0x003A...0x0045).enumerated() {
-        setKick(UInt16(value), layer: 4, entry: offset + 1)
-    }
-    for layer in 0..<8 {
-        setKick(0x00A8, layer: layer, entry: 74)
-        setKick(0x00A9, layer: layer, entry: 90)
-        setKick(0x00AA, layer: layer, entry: 91)
-    }
-    let candidate = try Kick75KeymapController().makeBridgeProfile(from: original)
-    func kickCode(_ bytes: [UInt8], layer: Int, entry: Int) -> UInt16 {
-        let offset = (layer * entriesPerLayer + entry) * 2
-        return (UInt16(bytes[offset]) << 8) | UInt16(bytes[offset + 1])
-    }
-    check((1...12).map { kickCode(candidate, layer: 0, entry: $0) }
-            == Array(0x68...0x73).map(UInt16.init),
-          "Kick75 physical F row becomes F13-F24")
-    check(kickCode(candidate, layer: 0, entry: 74) == 0x0048
-            && kickCode(candidate, layer: 0, entry: 90) == 0x0046
-            && kickCode(candidate, layer: 0, entry: 91) == 0x0047,
-          "Kick75 knob becomes unique press-right-left events")
-    check(Kick75KeymapController.hasBridgeProfile(candidate)
-            && !Kick75KeymapController.hasBridgeProfile(original),
-          "Kick75 distinguishes original backup from Bridge profile")
-    check(Kick75KeymapController.isPlausibleKeymap(original)
-            && Kick75KeymapController.isPlausibleKeymap(candidate),
-          "Kick75 accepts only its verified original or Bridge layout")
-    let changedOffsets = Set(original.indices.filter { original[$0] != candidate[$0] })
-    let expectedEntries = Set(
-        [0, 4].flatMap { layer in (1...12).map { layer * entriesPerLayer + $0 } }
-            + (0..<8).flatMap { layer in [74, 90, 91].map { layer * entriesPerLayer + $0 } }
-    )
-    check(changedOffsets.allSatisfy { expectedEntries.contains($0 / 2) },
-          "Kick75 transform leaves every unrelated key byte untouched")
-    var incompatible = original
-    let badOffset = (0 * entriesPerLayer + 1) * 2
-    incompatible[badOffset] = 0x12
-    incompatible[badOffset + 1] = 0x34
-    check(!Kick75KeymapController.isPlausibleKeymap(incompatible),
-          "Kick75 rejects an unexpected matrix before any write")
-} catch {
-    check(false, "Kick75 hardware profile transform: \(error.localizedDescription)")
-}
-
-do {
-    let entriesPerLayer = 119
-    var original = [UInt8](repeating: 0, count: Node100LPANSIKeymapController.keymapByteCount)
-    func setNode(_ value: UInt16, layer: Int, entry: Int) {
-        let offset = (layer * entriesPerLayer + entry) * 2
-        original[offset] = UInt8(value >> 8)
-        original[offset + 1] = UInt8(value & 0xFF)
-    }
-    func nodeCode(_ bytes: [UInt8], layer: Int, entry: Int) -> UInt16 {
-        let offset = (layer * entriesPerLayer + entry) * 2
-        return (UInt16(bytes[offset]) << 8) | UInt16(bytes[offset + 1])
-    }
-    let macRow: [UInt16] = [
-        0x0069, 0x006A, 0x7E06, 0x7E07, 0x7E08, 0x7E16,
-        0x00AC, 0x00AE, 0x00AB, 0x00A8, 0x00AA, 0x00A9,
-    ]
-    for (offset, value) in macRow.enumerated() { setNode(value, layer: 0, entry: offset + 1) }
-    for (offset, value) in (0x003A...0x0045).enumerated() {
-        setNode(UInt16(value), layer: 4, entry: offset + 1)
-    }
-    for layer in [0, 4] {
-        setNode(0x00A8, layer: layer, entry: 115)
-        setNode(0x00AB, layer: layer, entry: 116)
-        setNode(0x00AA, layer: layer, entry: 117)
-        setNode(0x00A9, layer: layer, entry: 118)
-    }
-    setNode(0x00A8, layer: 1, entry: 115)
-    setNode(0x0069, layer: 1, entry: 117)
-    setNode(0x006A, layer: 1, entry: 118)
-
-    let candidate = try Node100LPANSIKeymapController().makeBridgeProfile(from: original)
-    check((1...12).map { nodeCode(candidate, layer: 0, entry: $0) }
-            == Array(0x68...0x73).map(UInt16.init)
-            && (1...12).map { nodeCode(candidate, layer: 4, entry: $0) }
-            == Array(0x68...0x73).map(UInt16.init),
-          "Node100 LP ANSI physical F rows become F13-F24")
-    check(nodeCode(candidate, layer: 0, entry: 115) == 0x0048
-            && nodeCode(candidate, layer: 0, entry: 116) == 0x00AB
-            && nodeCode(candidate, layer: 0, entry: 117) == 0x0047
-            && nodeCode(candidate, layer: 0, entry: 118) == 0x0046,
-          "Node100 LP ANSI touch gestures become unique reasoning controls")
-    check(nodeCode(candidate, layer: 1, entry: 115) == 0x00A8
-            && nodeCode(candidate, layer: 1, entry: 117) == 0x0069
-            && nodeCode(candidate, layer: 1, entry: 118) == 0x006A,
-          "Node100 LP ANSI Fn touch gestures remain native")
-    let changedOffsets = Set(original.indices.filter { original[$0] != candidate[$0] })
-    var expectedEntries: Set<Int> = []
-    for layer in [0, 4] {
-        for entry in 1...12 { expectedEntries.insert(layer * entriesPerLayer + entry) }
-        for entry in [115, 117, 118] { expectedEntries.insert(layer * entriesPerLayer + entry) }
-    }
-    check(changedOffsets.allSatisfy { expectedEntries.contains($0 / 2) },
-          "Node100 LP ANSI transform leaves unrelated and Fn bytes untouched")
-    check(Node100LPANSIKeymapController.hasBridgeProfile(candidate)
-            && !Node100LPANSIKeymapController.hasBridgeProfile(original)
-            && Node100LPANSIKeymapController.isPlausibleKeymap(original)
-            && Node100LPANSIKeymapController.isPlausibleKeymap(candidate),
-          "Node100 LP ANSI accepts only verified original or Bridge layouts")
-} catch {
-    check(false, "Node100 LP ANSI hardware profile transform: \(error.localizedDescription)")
 }
 
 if CommandLine.arguments.contains("--software-only") {

@@ -204,22 +204,6 @@ public final class ConfigurationStore: @unchecked Sendable {
             }
             value.modelKeyBindings = modelBindings
         }
-        // A short-lived multi-model build derived Kick75 from the installed
-        // Air profile and persisted only Agent 1 as F14 while the remaining
-        // actions stayed F2-F12. That mixed sequence can never represent the
-        // requested physical F1-F12 default; repair only this exact legacy
-        // signature so real user customizations remain untouched.
-        if var kickBindings = value.modelKeyBindings?["nuphy.kick75"],
-           kickBindings.count == 12,
-           kickBindings.map(\.usagePage) == Array(repeating: 0x07, count: 12),
-           kickBindings.map(\.usage) == [0x69] + Array(0x3B...0x45),
-           kickBindings.map(\.action) == BridgeConfiguration.defaultBindings.map(\.action) {
-            kickBindings[0] = BridgeConfiguration.defaultBindings[0]
-            var bindings = value.modelKeyBindings ?? [:]
-            bindings["nuphy.kick75"] = kickBindings
-            value.modelKeyBindings = bindings
-            requiresSchemaSave = true
-        }
         if requiresSchemaSave { try? save(value) }
         return value
     }

@@ -89,7 +89,7 @@ final class CodexDesktopTitleObserver: @unchecked Sendable {
                 "clientInfo": [
                     "name": "n_agent_bridge_title_index",
                     "title": "N Agent Bridge Title Index",
-                    "version": "0.13.5"
+                    "version": "0.14.0"
                 ]
             ])
             initializeRequestID = requestID

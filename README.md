@@ -4,131 +4,79 @@
 [![Swift 5.9](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)](Package.swift)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-N Agent Bridge 是一个原生 macOS 工具，把受支持的 NuPhy 键盘变成 Codex Desktop 的实体控制台。它支持稳定的 Agent 对话绑定、批准/拒绝、听写、发送、推理深度控制、任意实体键映射，以及已验证型号的六路实时状态灯。
+N Agent Bridge 是面向 **NuPhy Air75 V3 ANSI** 的原生 macOS 工具，把键盘的 F 区与旋钮变成 Codex Desktop 实体控制台。当前版本只保留 Air75 V3，避免把未验证协议写入其他型号。
 
-> 这是独立第三方开源项目，与 OpenAI、Codex 或 NuPhy 无隶属关系。
+> 独立第三方开源项目，与 OpenAI、Codex 或 NuPhy 无隶属关系。
 
-## 下载与安装
+## 下载
 
-当前可下载版本为 **0.13.5 Development**：
+当前版本：**0.14.0 Development**，适配 NuPhy Air75 V3 官方固件 **1.0.16.6**。
 
-- [下载 0.13.5 测试版 DMG](https://github.com/bohu8264/N-Agent-Bridge/releases/download/v0.13.5-development/NAgentBridge-0.13.5-Development.dmg)
-- [查看 0.13.5 发布说明、安装包与源码包](https://github.com/bohu8264/N-Agent-Bridge/releases/tag/v0.13.5-development)
-- SHA-256：`71d7a873187da979d4eec3e499581221e05d9a811294da9ab9a9acf0d121956e`
+- [下载 0.14.0 DMG](https://github.com/bohu8264/N-Agent-Bridge/releases/download/v0.14.0-development/NAgentBridge-0.14.0-Development.dmg)
+- [发布说明与源码](https://github.com/bohu8264/N-Agent-Bridge/releases/tag/v0.14.0-development)
+- SHA-256：`477a34f1d9a411bd91f6f25aa27d4382aba8bdc0bd986d1f6538744d8a911e47`
 
-安装步骤：
+Development 包使用项目固定自签名证书，未经过 Apple 公证。macOS 第一次拦截时，请到“系统设置 → 隐私与安全性”选择“仍要打开”，不要关闭整个 Gatekeeper。
 
-1. 下载 DMG，把 **N Agent Bridge.app** 拖入“应用程序”。
-2. 第一次设置请使用 USB-C 数据线，并把受支持的 NuPhy 键盘切换到有线模式。
-3. 在 macOS“系统设置 → 隐私与安全性”中允许“输入监控”和“辅助功能”。
-4. 返回应用，点击“连接并启用”。0.13.5 会读取当前键盘的真实配置，把实体 F1–F12 自动写成专用 F13–F24 事件并完整回读；Air75 V3、Kick75 IO 与 Node100 LP ANSI 首次配置都会自动选择“指示灯”背光。配置期间键位、背光和状态灯事务会排队执行，不再争抢同一个 HID 回复。
+## 首次使用
 
-从旧版升级、更新过键盘固件或换到另一台 Mac 后，也请用 USB-C 再点一次“连接并启用”。应用不会只相信旧的“已配置”记录：它会先只读验证当前实体键位，自动修复 F1–F12 或已知的 `F13 / F15 / Tab / F16…` 异常序列，再做完整回读。该修复每次启动都可执行，不再受旧配置 schema 标签影响，同时严格保留真正的用户自定义键。键位验真、灯光握手或状态灯在通道刚枚举/键盘刚唤醒时会做有界重试，避免首页已连接而配置暂时待响应。
+1. 把 App 从 DMG 拖到“应用程序”，不要直接在 DMG 内运行。
+2. 将 Air75 V3 更新到官方固件 `1.0.16.6`，切换到有线模式并使用数据 USB-C 线连接。
+3. 完全退出浏览器中的 NuPhyIO 配置页，避免两个配置器争用同一个 HID 通道。
+4. 在 macOS“隐私与安全性”中允许 N Agent Bridge 的“输入监控”和“辅助功能”，然后退出并重新打开 App。
+5. 点击“连接并启用”，等待应用完成键位备份、F13–F24 写入、完整回读和指示灯初始化。
 
-当前免费测试包使用项目自签名证书，并未经过 Apple 公证。若 macOS 阻止首次打开，请到“系统设置 → 隐私与安全性”确认来源后选择“仍要打开”。不要关闭整个系统的 Gatekeeper。
+macOS 的两项权限都必须由用户本人批准，安装包不能静默授予。完整说明见 [中文使用说明](docs/USER-GUIDE.zh-CN.md)。
 
-完整图文步骤见 [中文使用说明](docs/USER-GUIDE.zh-CN.md)。
-
-## 已实现功能
+## 功能
 
 | 实体控制 | Codex 动作 |
 | --- | --- |
-| Agent 1–6 | 按当前来源模式打开六个对话；单击后台切换，双击唤到前台 |
+| F1–F6 | Agent 1–6 |
 | F7 | 切换 Fast Mode |
 | F8 / F9 | 批准 / 拒绝 |
 | F10 | 新建任务 |
 | F11 | Codex 原生听写 |
 | F12 | 发送 |
 | 旋钮左转 / 按下 / 右转 | 降低推理深度 / 打开选择器 / 提高推理深度 |
-| Node100 触控条左滑 / 双击 / 右滑 | 降低推理深度 / 打开选择器 / 提高推理深度 |
 
-六个 Agent 状态灯：
+应用把物理 F1–F12 的板载键值改为 F13–F24，因此不会同时触发 macOS 原生亮度、媒体或音量功能。停止控制时可通过 USB-C 安全恢复原始键位。
 
-- 白色：空闲
-- 蓝色：正在思考
-- 绿色：任务完成
-- 橙色：等待确认
-- 红色：发生错误
+六个 Agent 键支持自定义到其他已知实体键，状态灯会跟随新的实体位置：白色空闲、蓝色思考、绿色完成、橙色等待确认、红色报错。Agent 来源支持最近、置顶、优先和自定义四种策略，并按稳定对话 ID 绑定，不依赖会变化的侧栏位置。
 
-Agent 对话来源支持 Codex Micro 官方的四种模式：最近对话、置顶对话、优先对话、自定义分配。所有模式都使用 Codex 对话 ID，而不是侧栏的临时位置，因此任务完成后重新置顶不会再让按键打开错误对话。自定义分配按 Codex 左侧栏的“项目 → 对话”层级选择；项目名、顺序和归属来自 Codex 本机状态，任务显示名使用 app-server 正式 `Thread.name`，会随 Codex 左侧栏实时更新。
+## 连接能力
 
-12 个动作都能学习到数字、字母、F 区或导航键。Air75 V3、Kick75 IO 和 Node100 LP ANSI 上把 Agent 1–6 改到其他已知实体键时，`0xD8` 状态灯会跟随新的实体灯位。
-
-## 硬件支持
-
-目前 **NuPhy Air75 V3、Kick75 IO、Node100 LP ANSI** 已完成 USB-C 硬件验证。Air65 V3、Air100 V3、Node75 和 Node100 其他变体已加入官方身份 Profile，可先使用不写未知固件的安全软件按键模式。
-
-| 型号 | 软件按键控制 | 板载专用层 / 状态灯 / 侧灯写入 |
-| --- | --- | --- |
-| Air75 V3 | 支持 | 已验证 |
-| Air65 V3 | 支持 | 待实机验证 |
-| Air100 V3 | 支持 | 待实机验证 |
-| Kick75 IO | 支持 | F1–F12、旋钮、USB-C Agent 状态灯及背光/侧灯已验证 |
-| Node75 | 支持 | 待实机验证 |
-| Node100 LP ANSI | 支持 | F1–F12、触控条、完整 108 键状态灯、背光/点阵灯及休眠已验证 |
-| Node100 其他变体 | 支持 | 待逐型号实机验证 |
-
-灯效按型号开放：Air75 V3 侧灯支持流光、霓虹、常亮、呼吸、律动；Kick75 官方只支持前四种；Node100 LP ANSI 使用独立的点阵灯常亮/呼吸白名单。应用不会向型号写入未验证模式。
-
-| 连接方式 | 按键控制 | Agent 实时状态灯 | 说明 |
+| 连接 | 按键控制 | F1–F6 状态灯 | 管理设置 |
 | --- | --- | --- | --- |
-| USB-C | 支持 | 支持 | 首次配置与恢复必须使用 |
-| 官方 U1 2.4G | 支持 | 支持 | 需要接收器/键盘固件转发配置命令 |
-| Bluetooth | 支持 | 暂不支持 | 当前固件没有可验证的实时灯光配置通道 |
+| USB-C | 支持 | 支持 | 首次配置、恢复与全部灯效 |
+| 官方 U1 2.4G | 支持 | 支持 | 固件提供 S4 转发时可用 |
+| 蓝牙 | 支持 | 暂不支持 | 官方固件未暴露可回读的实时灯光通道 |
 
-Agent 独立颜色需要包含 `0xD8 SetSignalLights` 的新版固件和对应型号的已验证灯位表。应用不会向未知型号或未经验证的 HID 通道盲目写入数据。
+## 1.0.16.6 兼容修复
 
-其他 NuPhy 键盘可以继续适配，但必须先新增独立设备 Profile，并逐项完成实机读取、备份、写入、ACK、完整回读和恢复验证。详见 [新增 NuPhy 键盘型号](docs/ADDING-NUPHY-KEYBOARD.zh-CN.md)。
+官方 NuPhyIO 会先发送 `0xEE SetSecretKey` 建立单字节 XOR 会话。固件 1.0.16.6 的响应保留明文路由头、仅加密 payload；旧固件则会加密路由头和 payload。0.14.0 在每个逻辑事务前重新握手，同时兼容两种返回格式。
+
+灯光 D5 仍读取 macOS/Windows 两个 Profile，但 D6 只写 macOS handle 0。新版固件会在写 handle 1 时规范化未使用字段，旧逻辑因此误报“USB-C 待响应”。D6、D8、D2、完整 1568-byte 键位表及失败恢复都已在 Air75 V3 1.0.16.6 真机验证。
 
 ## 隐私与安全
 
-- 只识别受支持键盘和已映射的控制键，不记录普通文字、密码或聊天内容。
-- Codex 状态读取仅使用本地线程 ID、app-server `Thread.name`、项目名称/顺序/归属、项目目录、事件类型和时间戳；`thread/list` 附带的首条消息预览会立即丢弃，不读取或保存任务正文与回答正文，所有数据只在本机使用。
-- Codex 可见确认卡只读取按钮标签和活动任务 ID，用于让精确 Agent 灯变橙；不读取确认问题或聊天正文。
-- 不保存 API Key，不复制 Codex 登录凭据，不上传 HID 报告。
-- 合成按键只定向发送给正在运行的 Codex Desktop。
-- 所有硬件写入都受型号 driver 白名单、备份、ACK、回读和失败恢复保护。
-
-更多信息见 [隐私说明](docs/PRIVACY.md) 与 [架构说明](docs/ARCHITECTURE.md)。
+- 不记录普通文字、密码或聊天正文。
+- 不保存 API Key，不上传 HID 报告。
+- 硬件写入只匹配 Air75 V3 精确 VID/PID 与配置接口。
+- 键位、灯光和休眠事务均先备份，再写入、ACK、延时回读；失败自动恢复。
+- 配置和硬件备份保存在用户本机。
 
 ## 本地开发
-
-要求：
-
-- macOS 13 或更高版本
-- Swift 5.9+
-- Xcode Command Line Tools；运行 XCTest 建议安装完整 Xcode
 
 ```sh
 git clone https://github.com/bohu8264/N-Agent-Bridge.git
 cd N-Agent-Bridge
-
-CLANG_MODULE_CACHE_PATH=/tmp/nagent-clang-cache \
-SWIFTPM_MODULECACHE_OVERRIDE=/tmp/nagent-clang-cache \
-swift build --disable-sandbox --scratch-path /tmp/nagent-build --product Air75AgentBridge
-
-CLANG_MODULE_CACHE_PATH=/tmp/nagent-clang-cache \
-SWIFTPM_MODULECACHE_OVERRIDE=/tmp/nagent-clang-cache \
-swift run --disable-sandbox --scratch-path /tmp/nagent-build Air75CoreSelfTest --software-only
+swift build --disable-sandbox --product Air75AgentBridge
+swift run --disable-sandbox Air75CoreSelfTest --software-only
 ```
 
-发布和硬件测试前请先阅读 [AGENTS.md](AGENTS.md)、[PROGRESS.md](PROGRESS.md) 与 [BLOCKERS.md](BLOCKERS.md)。协议探测工具会打开 Vendor HID 通道，运行前必须退出正在运行的 N Agent Bridge，避免两个进程争用设备。
-
-## 参与开发
-
-不需要成为仓库协作者：
-
-1. Fork 本仓库；
-2. 从 `main` 创建功能分支；
-3. 完成代码、文档与相关测试；
-4. 向本仓库提交 Pull Request。
-
-具体要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
-
-## 发布说明
-
-普通开发构建由 `scripts/build-release.sh`、`scripts/create-dmg.sh` 和 `scripts/verify-release.sh` 生成。Apple 官方认可的站外发行还需要 Developer ID Application、Notarization 与 Stapling；相关流水线已在 `scripts/release-public.sh` 中实现，详见 [正式站外发行说明](docs/PUBLIC-RELEASE.zh-CN.md)。
+发布或硬件测试前必须阅读 [AGENTS.md](AGENTS.md)、[PROGRESS.md](PROGRESS.md) 与 [BLOCKERS.md](BLOCKERS.md)。开发者可以 Fork 仓库后提交 Pull Request；详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## License
 
-本项目使用 [MIT License](LICENSE)。
+[MIT License](LICENSE)

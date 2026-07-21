@@ -152,10 +152,11 @@ public enum Air75LightingError: LocalizedError {
     case sessionKeyConflict(UInt8)
     case sleepVerificationFailed(expected: [UInt8], actual: [UInt8])
     case invalidSignalLights
+    case signalLightReadbackMismatch
     case unsupportedBacklightMode(model: String, mode: Air75BacklightMode)
     case unsupportedSidelightMode(model: String, mode: Air75SidelightMode)
     case stateWritesNotVerified(String)
-    case stateReadbackMismatch(String)
+    case stateReadbackMismatch(String, expected: [Air75LightingState], actual: [Air75LightingState])
 
     public var errorDescription: String? {
         switch self {
@@ -177,13 +178,15 @@ public enum Air75LightingError: LocalizedError {
             return "键盘休眠时间回读不一致（期望 \(expectedBytes)，实际 \(actualBytes)）；已尝试恢复修改前设置"
         case .invalidSignalLights:
             return "F1–F6 指示灯数据无效"
+        case .signalLightReadbackMismatch:
+            return "Agent 指示灯写入后的 D2 回读与目标颜色不一致；已尝试恢复修改前颜色"
         case .unsupportedBacklightMode(let model, let mode):
             return "\(model) 不支持背光效果“\(mode.displayName)”"
         case .unsupportedSidelightMode(let model, let mode):
             return "\(model) 不支持侧灯效果“\(mode.displayName)”"
         case .stateWritesNotVerified(let model):
             return "\(model) 的普通背光与侧灯写入尚未通过完整回读验证；当前仅启用 Agent 单键状态灯"
-        case .stateReadbackMismatch(let model):
+        case .stateReadbackMismatch(let model, _, _):
             return "\(model) 灯光写入后的 D5 回读与目标状态不一致；已尝试恢复修改前设置"
         }
     }
@@ -216,8 +219,10 @@ public final class Air75V3LightingController: @unchecked Sendable {
     public let supportsFullLightingControl: Bool
     public let supportedBacklightModes: [Air75BacklightMode]
     public let supportedSidelightModes: [Air75SidelightMode]
-    /// D5 exposes separate Mac and Windows lighting profiles as handles 0
-    /// and 1. Only handles that passed a hardware round trip may be written.
+    /// D5 exposes separate macOS and Windows lighting profiles. The macOS app
+    /// only writes handle 0. Firmware 1.0.16.6 normalizes unused metadata in
+    /// handle 1 when it is written, so touching that profile causes a false
+    /// verification failure and changes state the user did not ask to edit.
     public let writableLightingHandles: Set<Int>
 
     public init(preferredConnection: KeyboardLightingConnection? = nil) {
@@ -229,33 +234,7 @@ public final class Air75V3LightingController: @unchecked Sendable {
         self.supportsFullLightingControl = true
         self.supportedBacklightModes = Air75BacklightMode.allCases
         self.supportedSidelightModes = Air75SidelightMode.allCases
-        self.writableLightingHandles = [0, 1]
-    }
-
-    /// Creates a narrowly scoped S4 lighting route for another model after
-    /// its USB identity and commands have been verified on hardware. Setting
-    /// `supportsFullLightingControl` to false keeps D5/D2 reads and D8 Agent
-    /// indicators available while rejecting unverified D6 zone writes.
-    public init(
-        profileID: String,
-        deviceDisplayName: String,
-        wiredProductID: Int,
-        receiverProductID: Int? = nil,
-        supportsFullLightingControl: Bool,
-        writableLightingHandles: Set<Int> = [0, 1],
-        supportedBacklightModes: [Air75BacklightMode] = Air75BacklightMode.allCases,
-        supportedSidelightModes: [Air75SidelightMode] = Air75SidelightMode.allCases,
-        preferredConnection: KeyboardLightingConnection? = nil
-    ) {
-        self.requestedConnection = preferredConnection
-        self.wiredProductID = wiredProductID
-        self.receiverProductID = receiverProductID
-        self.deviceDisplayName = deviceDisplayName
-        self.profileID = profileID
-        self.supportsFullLightingControl = supportsFullLightingControl
-        self.supportedBacklightModes = supportedBacklightModes
-        self.supportedSidelightModes = supportedSidelightModes
-        self.writableLightingHandles = writableLightingHandles.intersection([0, 1])
+        self.writableLightingHandles = [0]
     }
 
     public func detectedConnection() -> KeyboardLightingConnection? {
@@ -295,43 +274,86 @@ public final class Air75V3LightingController: @unchecked Sendable {
     /// indexes. D2 addresses RGB bytes, so a contiguous range is fetched in a
     /// single transaction and then reduced back to the caller's order.
     public func readSignalLights(indices: [UInt8]) throws -> [Air75SignalLight] {
-        guard !indices.isEmpty, Set(indices).count == indices.count,
-              let minimum = indices.min(), let maximum = indices.max() else {
+        guard !indices.isEmpty, Set(indices).count == indices.count else {
             throw Air75LightingError.invalidSignalLights
         }
-        let byteCount = (Int(maximum) - Int(minimum) + 1) * 3
-        guard byteCount <= 54 else { throw Air75LightingError.invalidSignalLights }
-        let address = UInt16(Int(minimum) * 3)
-        let response = try transact(
-            command: Self.getKeyLightColor,
-            length: UInt8(byteCount),
-            address: address,
-            handle: 0
-        )
-        let bytes = payload(from: response, expectedLength: byteCount)
-        return indices.map { index in
-            let offset = (Int(index) - Int(minimum)) * 3
-            return Air75SignalLight(
-                index: index,
-                color: Air75RGBColor(
-                    red: bytes[offset],
-                    green: bytes[offset + 1],
-                    blue: bytes[offset + 2]
-                )
-            )
+
+        // D2 can return at most 56 payload bytes. Agent keys may be learned
+        // anywhere on the Air75 layout, so split sparse indexes into bounded
+        // contiguous windows instead of rejecting a valid F-row + Q/number
+        // combination whose overall span exceeds one report.
+        let sorted = indices.sorted()
+        var windows: [[UInt8]] = []
+        for index in sorted {
+            if var last = windows.last,
+               let minimum = last.first,
+               (Int(index) - Int(minimum) + 1) * 3 <= 54 {
+                last.append(index)
+                windows[windows.count - 1] = last
+            } else {
+                windows.append([index])
+            }
         }
+
+        var lightsByIndex: [UInt8: Air75SignalLight] = [:]
+        for window in windows {
+            guard let minimum = window.first, let maximum = window.last else { continue }
+            let byteCount = (Int(maximum) - Int(minimum) + 1) * 3
+            let response = try transact(
+                command: Self.getKeyLightColor,
+                length: UInt8(byteCount),
+                address: UInt16(Int(minimum) * 3),
+                handle: 0
+            )
+            let bytes = payload(from: response, expectedLength: byteCount)
+            for index in window {
+                let offset = (Int(index) - Int(minimum)) * 3
+                lightsByIndex[index] = Air75SignalLight(
+                    index: index,
+                    color: Air75RGBColor(
+                        red: bytes[offset],
+                        green: bytes[offset + 1],
+                        blue: bytes[offset + 2]
+                    )
+                )
+            }
+        }
+        guard lightsByIndex.count == indices.count else {
+            throw Air75LightingError.invalidSignalLights
+        }
+        return indices.compactMap { lightsByIndex[$0] }
     }
 
     /// Writes one or more logical indicator LEDs with the firmware's D8
     /// `index, red, green, blue` payload. The S4 acknowledgement must echo the
-    /// complete payload; this gives us protocol-level verification without
-    /// guessing about the currently selected backlight animation.
+    /// complete payload. D2 is then used for exact hardware readback. If the
+    /// firmware ACKs but stores another index/color, the pre-write colors are
+    /// restored before the error is returned.
     @discardableResult
     public func setSignalLights(_ lights: [Air75SignalLight]) throws -> [Air75SignalLight] {
         guard !lights.isEmpty, lights.count <= 14,
               Set(lights.map(\.index)).count == lights.count else {
             throw Air75LightingError.invalidSignalLights
         }
+        let requested = lights.sorted { $0.index < $1.index }
+        let before = try readSignalLights(indices: requested.map(\.index))
+        do {
+            try writeSignalLightsAcknowledged(requested)
+            Thread.sleep(forTimeInterval: 0.10)
+            let verified = try readSignalLights(indices: requested.map(\.index))
+            guard verified.sorted(by: { $0.index < $1.index }) == requested else {
+                throw Air75LightingError.signalLightReadbackMismatch
+            }
+            return verified
+        } catch {
+            try? writeSignalLightsAcknowledged(before)
+            Thread.sleep(forTimeInterval: 0.10)
+            _ = try? readSignalLights(indices: before.map(\.index))
+            throw error
+        }
+    }
+
+    private func writeSignalLightsAcknowledged(_ lights: [Air75SignalLight]) throws {
         let bytes = lights.flatMap(\.encodedBytes)
         let acknowledgement = try transact(
             command: Self.setSignalLights,
@@ -342,7 +364,6 @@ public final class Air75V3LightingController: @unchecked Sendable {
         )
         let echoed = payload(from: acknowledgement, expectedLength: bytes.count)
         guard echoed == bytes else { throw Air75LightingError.invalidResponse }
-        return lights
     }
 
     public func readSleepConfiguration() throws -> KeyboardSleepConfiguration {
@@ -577,9 +598,11 @@ public final class Air75V3LightingController: @unchecked Sendable {
         targets: [Air75LightingState],
         permitsRGBQuantization: Bool
     ) throws -> [Air75LightingState] {
+        var latestStates: [Air75LightingState] = []
         for attempt in 0..<5 {
             if attempt > 0 { Thread.sleep(forTimeInterval: 0.12) }
             let states = try readStates()
+            latestStates = states
             let matches = targets.allSatisfy { expected in
                 guard let actual = states.first(where: { $0.handle == expected.handle }) else {
                     return false
@@ -592,7 +615,11 @@ public final class Air75V3LightingController: @unchecked Sendable {
             }
             if matches { return states }
         }
-        throw Air75LightingError.stateReadbackMismatch(deviceDisplayName)
+        throw Air75LightingError.stateReadbackMismatch(
+            deviceDisplayName,
+            expected: targets,
+            actual: latestStates
+        )
     }
 
     private func validateSupportedSidelightModes(in states: [Air75LightingState]) throws {
@@ -685,7 +712,7 @@ private final class ProtocolRouteMemory: @unchecked Sendable {
 private final class ProtocolSession {
     private let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
     private let inputBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 64)
-    private let expectedCommand: UInt8
+    private var awaitingCommand: UInt8
     private let preferredConnection: KeyboardLightingConnection?
     private let wiredProductID: Int
     private let receiverProductID: Int?
@@ -693,7 +720,7 @@ private final class ProtocolSession {
 
     init(expectedCommand: UInt8, preferredConnection: KeyboardLightingConnection?,
          wiredProductID: Int, receiverProductID: Int?) {
-        self.expectedCommand = expectedCommand
+        self.awaitingCommand = expectedCommand
         self.preferredConnection = preferredConnection
         self.wiredProductID = wiredProductID
         self.receiverProductID = receiverProductID
@@ -792,44 +819,105 @@ private final class ProtocolSession {
 
     private func attempt(on device: IOHIDDevice, command: UInt8, length: UInt8,
                          address: UInt16, handle: UInt8, payload: [UInt8]) throws -> [UInt8] {
-        response = nil
         inputBuffer.initialize(repeating: 0, count: 64)
         IOHIDDeviceRegisterInputReportCallback(device, inputBuffer, 64, Self.inputReport,
                                                Unmanaged.passUnretained(self).toOpaque())
-        var report = Self.makeReport(command: command, length: length, address: address,
-                                     handle: handle, payload: payload)
+        // Establish the official session immediately before every logical
+        // transaction. This is intentionally bounded but not cached: a web
+        // NuPhyIO tab can replace the keyboard's RAM key at any time, and the
+        // 1.0.16.6 response header no longer proves which key encrypted data.
+        let sessionKey = try establishSession(on: device)
+        return try sendCommand(
+            on: device,
+            command: command,
+            length: length,
+            address: address,
+            handle: handle,
+            payload: payload,
+            sessionKey: sessionKey
+        )
+    }
+
+    private func establishSession(on device: IOHIDDevice) throws -> UInt8 {
+        let handshake = NuPhyS4ProtocolCodec.randomHandshake()
+        let acknowledgement = try sendAndReceive(
+            handshake.report,
+            on: device,
+            command: NuPhyS4ProtocolCodec.setSecretKeyCommand
+        )
+        do {
+            try NuPhyS4ProtocolCodec.validateHandshakeAcknowledgement(acknowledgement)
+        } catch NuPhyS4ProtocolCodec.DecodeError.invalidChecksum {
+            throw Air75LightingError.invalidChecksum
+        } catch {
+            throw Air75LightingError.invalidResponse
+        }
+        return handshake.sessionKey
+    }
+
+    private func sendCommand(
+        on device: IOHIDDevice,
+        command: UInt8,
+        length: UInt8,
+        address: UInt16,
+        handle: UInt8,
+        payload: [UInt8],
+        sessionKey: UInt8
+    ) throws -> [UInt8] {
+        let report = NuPhyS4ProtocolCodec.makeReport(
+            command: command,
+            length: length,
+            address: address,
+            handle: handle,
+            payload: payload,
+            sessionKey: sessionKey
+        )
+        let response = try sendAndReceive(report, on: device, command: command)
+        do {
+            return try NuPhyS4ProtocolCodec.decodeResponse(
+                response,
+                command: command,
+                length: length,
+                address: address,
+                handle: handle,
+                sessionKey: sessionKey
+            )
+        } catch NuPhyS4ProtocolCodec.DecodeError.invalidChecksum {
+            throw Air75LightingError.invalidChecksum
+        } catch NuPhyS4ProtocolCodec.DecodeError.sessionKeyMismatch(let key) {
+            throw Air75LightingError.sessionKeyConflict(key)
+        } catch {
+            throw Air75LightingError.invalidResponse
+        }
+    }
+
+    private func sendAndReceive(
+        _ reportBytes: [UInt8],
+        on device: IOHIDDevice,
+        command: UInt8
+    ) throws -> [UInt8] {
+        response = nil
+        awaitingCommand = command
+        var report = reportBytes
         let reportCount = report.count
         let writeResult = report.withUnsafeMutableBytes { bytes in
-            IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, 0,
-                                 bytes.bindMemory(to: UInt8.self).baseAddress!, reportCount)
+            IOHIDDeviceSetReport(
+                device,
+                kIOHIDReportTypeOutput,
+                0,
+                bytes.bindMemory(to: UInt8.self).baseAddress!,
+                reportCount
+            )
         }
-        guard writeResult == kIOReturnSuccess else { throw Air75LightingError.writeFailed(writeResult) }
+        guard writeResult == kIOReturnSuccess else {
+            throw Air75LightingError.writeFailed(writeResult)
+        }
 
         let deadline = Date().addingTimeInterval(1.5)
         while response == nil && Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
         guard let response else { throw Air75LightingError.timeout(command: command) }
-        guard response.count == 64, response[0] == 0xAA, response[1] == command else {
-            throw Air75LightingError.invalidResponse
-        }
-        let checksum = UInt8(response[4...].reduce(0) { ($0 + Int($1)) & 0xFF })
-        guard checksum == response[3] else { throw Air75LightingError.invalidChecksum }
-        // NuPhyIO 的 SetSecretKey (0xEE) 会让固件对帧头 4-7 字节和 payload 做
-        // XOR。四个字段一致地异或出同一个非零密钥时，说明键盘仍处于其他配置
-        // 器协商的加密会话，直接解析只会得到乱码。
-        let keyCandidates: Set<UInt8> = [
-            response[4] ^ length,
-            response[5] ^ UInt8(address & 0xFF),
-            response[6] ^ UInt8((address >> 8) & 0xFF),
-            response[7] ^ handle
-        ]
-        if keyCandidates.count == 1, let key = keyCandidates.first, key != 0 {
-            throw Air75LightingError.sessionKeyConflict(key)
-        }
-        guard Int(response[4]) >= Int(length), response.count >= 8 + Int(length) else {
-            throw Air75LightingError.invalidResponse
-        }
         return response
     }
 
@@ -882,26 +970,11 @@ private final class ProtocolSession {
         }
     }
 
-    private static func makeReport(command: UInt8, length: UInt8, address: UInt16,
-                                   handle: UInt8, payload: [UInt8]) -> [UInt8] {
-        var report = [UInt8](repeating: 0, count: 64)
-        report[0] = 0x55
-        report[1] = command
-        report[2] = 0
-        report[4] = length
-        report[5] = UInt8(address & 0xFF)
-        report[6] = UInt8((address >> 8) & 0xFF)
-        report[7] = handle
-        for (index, byte) in payload.prefix(56).enumerated() { report[8 + index] = byte }
-        report[3] = UInt8(report[4...].reduce(0) { ($0 + Int($1)) & 0xFF })
-        return report
-    }
-
     private static let inputReport: IOHIDReportCallback = { context, result, _, _, _, report, length in
         guard result == kIOReturnSuccess, let context, length == 64 else { return }
         let session = Unmanaged<ProtocolSession>.fromOpaque(context).takeUnretainedValue()
         let bytes = Array(UnsafeBufferPointer(start: report, count: length))
-        guard bytes.count >= 2, bytes[0] == 0xAA, bytes[1] == session.expectedCommand else { return }
+        guard bytes.count >= 2, bytes[0] == 0xAA, bytes[1] == session.awaitingCommand else { return }
         session.response = bytes
     }
 }

@@ -1,39 +1,23 @@
 # External Blockers
 
-这里只记录无法由普通应用代码自行解决的外部阻塞。
+这里只记录普通应用代码无法自行消除的外部限制。
 
-## 1. 蓝牙实机验收等待实体切换
+## 1. macOS 必须由用户授予两项权限
 
-当前键盘通过 USB 连接。系统记录 `Air75 V3-2` 已配对但未连接。蓝牙 VID/PID、HID Usage、旋钮事件、休眠/唤醒必须在用户拔线并切换硬件模式后实测，不能用 USB 结果代替。验收时先运行 `Air75ProtocolProbe --wireless-enumerate`（只读）记录蓝牙侧全部 HID 接口。
+输入监控用于读取 Air75 V3 的专用控制键，辅助功能用于把动作发送到当前 Codex 窗口。macOS 不允许应用或安装包静默授权，因此首次安装仍需用户各确认一次；固定 bundle ID、固定签名与原位升级用于让系统在后续版本中继承授权。
 
-2026-07-20 复核：NuPhyIO 设备目录中 Air75 V3 仍为 `bleConnectionConfig=null`；蓝牙 HID 只提供按键输入与很小的标准 LED 输出报告，没有 S4 所需的 64-byte usage 1:0 配置接口。蓝牙下按键和板载灯效可用，但 F1–F6 实时任务颜色仍需等待固件新增公开、可回读的 BLE 配置特征；普通应用无法通过权限或软件模拟补出该通道。
+## 2. 免费 Development 包没有 Apple 公证
 
-## 3. 普通键自定义的 macOS 设备归属限制
+当前钥匙串只有 `N Agent Bridge Local Signing`，没有 Developer ID Application 证书和 notarytool 凭据。Development DMG 可供已知来源测试，但朋友首次打开可能需要在“系统设置 → 隐私与安全性”点“仍要打开”。不要关闭 Gatekeeper，也不要运行 `spctl --master-disable`。
 
-0.8.0 可以把 Codex 动作分配到数字、字母、F 区或导航键，并在控制开启时用 session event tap 消费原字符。IOHID 回调只接受已识别 Air75，但 macOS 公开的非 root CGEvent session tap 不提供事件来自哪一把实体键盘的可靠身份，因此相同虚拟键在其他键盘上也会被消费。应用只在用户明确开启 Codex 控制时启用该规则，停止或退出后立即解除；如需多键盘并精确区分来源，需要 DriverKit/HIDDriver 或板载任意矩阵写入协议，当前不猜测实现。
+## 3. 蓝牙没有可用的 S4 配置通道
 
-## 4. Apple 公证的公开分发凭据缺失
+Air75 V3 蓝牙 HID 可发送普通按键，但当前固件没有暴露 64-byte S4 Vendor 通道，因此板载键位安装和实时 D8 灯光写入只支持 USB-C，以及经过验证的 U1 2.4G 配置路由。软件不能凭空补出固件没有提供的 BLE 特征。
 
-2026-07-20 已完成软件侧发行流水线：arm64/x86_64 分别编译并合并 Universal、无多余 entitlement、Developer ID 与 TeamIdentifier 强校验、Hardened Runtime、安全时间戳、DMG 签名、notarytool 公证、Stapling、Gatekeeper、磁盘映像和最终 SHA-256 校验。开发包已改名为 `NAgentBridge-Development.dmg`，正式文件名只会在公开流水线中产生。
+## 4. Codex Desktop 状态不是公开稳定 API
 
-当前钥匙串仍只有 `N Agent Bridge Local Signing`，没有 Developer ID Application；也没有可用的 notarytool Keychain profile。Apple Developer Program 账号持有人必须先取得并安装 Developer ID Application 证书，并在本机交互式保存公证凭据。没有这两项外部身份时，不能向 Apple 提交、不能生成 Apple 已认可的正式 `NAgentBridge.dmg`，本地证书也不适合发给其他 Mac。
+应用以只读方式组合 Codex app-server 的任务 ID/名称、当前窗口辅助功能语义和本地状态事件。后台未渲染的第三方 MCP 确认卡没有公开共享事件流，Codex 更新内部命令或存储结构后可能需要兼容更新。应用遇到未知格式会回退为空闲，不把不确定状态错误写成橙灯或蓝灯。
 
-## 5. macOS 用户授权与 Codex Desktop 命令兼容性
+## 5. 正常字符键的系统级拦截无法精确区分另一把键盘
 
-中继与系统事件拦截必须获得输入监控和辅助功能权限。macOS 明确要求用户本人在系统设置中确认，应用和安装包不能静默授权。应用只匹配 Air75 V3 的专用 Usage，并只向当前 `com.openai.codex` 进程发送映射后的快捷键。
-
-按键动作仍沿用经 0.5.0 验证的 Codex Desktop 中继，写入当前支持的 `~/.codex/keybindings.json` 命令。0.11.5 新增的独立 app-server 连接只调用只读 `thread/list` 获取 ID 与正式 `Thread.name`，不承接 Codex Desktop 的任务执行或批准。F11 直接使用 Codex 原生 `Control-Shift-D`；Codex Desktop 更新后若调整其他内部命令名，需要重新校验命令表。应用保留用户原快捷键并为改写前文件创建备份。
-
-## 6. Codex 后台审批实时状态仍缺公开稳定通道
-
-0.11.3 已用辅助功能按钮语义和 Desktop 活动 `conversationId` 补齐当前可见任务的安装、MCP 表单与普通审批橙灯，不读取聊天正文。剩余风险是：Codex Desktop 的 app-server 使用私有 stdio，另起进程无法读取其 `waitingOnApproval/waitingOnUserInput`；后台未渲染任务的 MCP 确认卡也不在辅助功能树中。因此“六个后台任务全部实时审批”仍需未来稳定、可共享的 app-server RPC 或官方事件接口。本地 `state_<N>.sqlite` 同样没有兼容承诺，升级改列时应用会自动回退目录扫描。
-
-## 7. 新增 NuPhy 型号的硬件写入等待实机
-
-Air65 V3、Air100 V3、Node75 及 Node100 其他布局/高度版本已能凭官方 PID/产品名进入安全软件按键模式，但仍需逐把实机验证。键位表长度、矩阵地址、D8 灯位和 U1 路由都可能不同，禁止为了“看起来支持”而复用其他型号 driver。
-
-Node100 LP ANSI（`19F5:1037`）已不再属于此阻塞：独立 1904-byte keymap、触控条、D6 背光/点阵灯、F3/F5 休眠和完整 108 键 D8 均已完成 USB-C 实机备份、ACK、回读与恢复。尚未完成的是该型号 U1 2.4G 路由，以及 Node100 HP/ISO/JIS 等其他身份。
-
-Kick75 IO 已在 `19F5:1026` 实机完成独立 1472-byte 键位 driver、D1/D2/D5 读取、D8 F1–F6 单键状态灯、D6 Mac handle 0 的背光/侧灯模式、颜色与精确恢复，以及 F3/F5 休眠时间验证。Windows handle 1 原值写回会被固件规范化部分内部字段，因此正式 driver 永不写入 handle 1；只剩 Kick75 U1 路由保持关闭，等待独立验证。
-
-Kick75 的普通侧灯不是外部阻塞：官方只提供模式 0–3，0.12.3 已逐项实机通过。模式 4 是 Air75 V3 专属效果，不能作为 Kick75 能力暴露；若旧版曾写入 4，需在键盘上按一次 `Fn + M + ←` 让固件回到有效模式。
+macOS 的非 root CGEvent session tap 不提供可靠的物理键盘来源。用户把 Agent 动作分配到 Q、数字键等普通键后，Codex 控制开启期间同一虚拟键会被消费；停止控制或退出应用后立即恢复。精确区分多把键盘需要 DriverKit/HIDDriver，不在当前免费应用范围内。

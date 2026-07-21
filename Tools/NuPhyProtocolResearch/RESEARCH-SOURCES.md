@@ -17,7 +17,6 @@
 
 - kelchm/nuphy-tools — S4 家族 PROTOCOL.md、sk 自动检测方法
 - fldc/nuphyctl — Rust CLI，Air75 V3 灯光 offset 表、WebHID 抓包方法论
-- zesiwike-cpu/NuNuBar — Swift/macOS，Air65 V3 同协议实现（0xEE 握手细节）
 - Z3R0-CDS/nuphy-linux — udev 规则中的 VID/PID 表
 - donn/nudelta（仅 V1）、nuphy-src/qmk_firmware（仅 V2）——确认均不适用 V3
 

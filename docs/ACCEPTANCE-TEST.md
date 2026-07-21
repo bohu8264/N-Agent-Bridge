@@ -1,29 +1,31 @@
-# Acceptance Test
+# Air75 V3 Acceptance Test
 
 ## 自动化
 
-- `swift build --product Air75AgentBridge`
-- `swift build --product Air75HIDInspector`
-- `swift test`
-- `scripts/verify-release.sh`
+- `Air75CoreSelfTest --software-only` 全部通过。
+- App 为 Universal `arm64 + x86_64`，Bundle 只含 `Air75V3.json`。
+- 固定签名 designated requirement 与上一版一致。
+- DMG 可只读挂载，App、Applications 链接和中文安装说明齐全，`hdiutil verify` 通过。
 
-## USB
+## USB-C 实机（官方固件 1.0.16.6）
 
-- 识别 VID/PID/序列号与全部接口；不识别名称相同但 VID/PID 不符的 USB 键盘。
-- 一键启用先创建可读回备份；UI 显示真实 Mapping Mode。
-- Inspector 逐项校准 F-row、方向键和旋钮；不写未知 Report。
+- 精确识别 `19F5:1028`，未知型号不进入写入路径。
+- A1 固件读取成功；每个逻辑事务先完成 0xEE 会话握手。
+- D5 能读取 macOS/Windows 两个灯光状态；正式 D6 只写 macOS handle 0。
+- D6 no-op、临时变化、D5 精确回读和最终恢复通过。
+- D8 no-op、临时单灯变化、D2 精确回读和最终恢复通过。
+- B2 1568-byte 键位表完整读取；配置后 F1–F12 对应 F13–F24，旋钮与原始备份可恢复。
+- 拔插、应用重启和 Mac 唤醒后不会长期停在“USB-C 待响应”。
 
-## 纯 Bluetooth（必须拔掉 USB）
+## 全新 Mac
 
-- 关联同一设备且不重复；不接管内置/其他键盘。
-- Agent 1–6、6 个 Command、方向工作流、旋钮左/右/按压/长按全部通过。
-- 创建/切换/发送/停止/继续/批准/拒绝反映真实 Codex 状态。
-- 按住说话与双击持续录音转写到 Composer，不自动发送。
-- 睡眠、键盘休眠、Mac 重启后自动恢复。
-- 蓝牙 RGB 各状态实测；若协议不可用则验收失败，不能以浮层替代。
+1. 拖入 Applications。
+2. 首次被 Gatekeeper 拦截时只点“仍要打开”。
+3. 授予输入监控和辅助功能后完整退出并重开。
+4. 退出 NuPhyIO，键盘切到有线模式，点“连接并启用”。
+5. 应用只有在键位回读、权限和灯光握手全部成功后才显示就绪。
 
-## 安装
+## 无线边界
 
-- 干净 Mac 无 Xcode/Homebrew/Node；拖入 Applications 后运行。
-- 权限说明清楚，完全退出后无监听/残留进程。
-- Developer ID、Hardened Runtime、Notarization、Stapling、DMG SHA-256 均验证通过。
+- U1 2.4G 只走已验证路由；首次板载配置必须 USB-C。
+- 蓝牙没有 S4 配置通道，因此只保证按键输入，不宣称实时单键灯光。
