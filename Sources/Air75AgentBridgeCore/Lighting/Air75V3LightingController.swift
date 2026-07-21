@@ -152,6 +152,9 @@ public enum Air75LightingError: LocalizedError {
     case sessionKeyConflict(UInt8)
     case sleepVerificationFailed(expected: [UInt8], actual: [UInt8])
     case invalidSignalLights
+    case unsupportedSidelightMode(model: String, mode: Air75SidelightMode)
+    case stateWritesNotVerified(String)
+    case stateReadbackMismatch(String)
 
     public var errorDescription: String? {
         switch self {
@@ -173,6 +176,12 @@ public enum Air75LightingError: LocalizedError {
             return "键盘休眠时间回读不一致（期望 \(expectedBytes)，实际 \(actualBytes)）；已尝试恢复修改前设置"
         case .invalidSignalLights:
             return "F1–F6 指示灯数据无效"
+        case .unsupportedSidelightMode(let model, let mode):
+            return "\(model) 不支持侧灯效果“\(mode.displayName)”"
+        case .stateWritesNotVerified(let model):
+            return "\(model) 的普通背光与侧灯写入尚未通过完整回读验证；当前仅启用 Agent 单键状态灯"
+        case .stateReadbackMismatch(let model):
+            return "\(model) 灯光写入后的 D5 回读与目标状态不一致；已尝试恢复修改前设置"
         }
     }
 }
@@ -197,13 +206,57 @@ public final class Air75V3LightingController: @unchecked Sendable {
     private static let getSleepInfo: UInt8 = 0xF3
     private static let setSleepConfiguration: UInt8 = 0xF5
     private let requestedConnection: KeyboardLightingConnection?
+    private let wiredProductID: Int
+    private let receiverProductID: Int?
+    private let deviceDisplayName: String
+    public let profileID: String
+    public let supportsFullLightingControl: Bool
+    public let supportedSidelightModes: [Air75SidelightMode]
+    /// D5 exposes separate Mac and Windows lighting profiles as handles 0
+    /// and 1. Only handles that passed a hardware round trip may be written.
+    public let writableLightingHandles: Set<Int>
 
     public init(preferredConnection: KeyboardLightingConnection? = nil) {
-        requestedConnection = preferredConnection
+        self.requestedConnection = preferredConnection
+        self.wiredProductID = Self.productID
+        self.receiverProductID = Self.dongleProductID
+        self.deviceDisplayName = "Air75 V3"
+        self.profileID = "nuphy.air75-v3"
+        self.supportsFullLightingControl = true
+        self.supportedSidelightModes = Air75SidelightMode.allCases
+        self.writableLightingHandles = [0, 1]
+    }
+
+    /// Creates a narrowly scoped S4 lighting route for another model after
+    /// its USB identity and commands have been verified on hardware. Setting
+    /// `supportsFullLightingControl` to false keeps D5/D2 reads and D8 Agent
+    /// indicators available while rejecting unverified D6 zone writes.
+    public init(
+        profileID: String,
+        deviceDisplayName: String,
+        wiredProductID: Int,
+        receiverProductID: Int? = nil,
+        supportsFullLightingControl: Bool,
+        writableLightingHandles: Set<Int> = [0, 1],
+        supportedSidelightModes: [Air75SidelightMode] = Air75SidelightMode.allCases,
+        preferredConnection: KeyboardLightingConnection? = nil
+    ) {
+        self.requestedConnection = preferredConnection
+        self.wiredProductID = wiredProductID
+        self.receiverProductID = receiverProductID
+        self.deviceDisplayName = deviceDisplayName
+        self.profileID = profileID
+        self.supportsFullLightingControl = supportsFullLightingControl
+        self.supportedSidelightModes = supportedSidelightModes
+        self.writableLightingHandles = writableLightingHandles.intersection([0, 1])
     }
 
     public func detectedConnection() -> KeyboardLightingConnection? {
-        ProtocolSession.detectedConnection(preferredConnection: requestedConnection)
+        ProtocolSession.detectedConnection(
+            preferredConnection: requestedConnection,
+            wiredProductID: wiredProductID,
+            receiverProductID: receiverProductID
+        )
     }
 
     public func preferConnection(_ connection: KeyboardLightingConnection) {
@@ -334,7 +387,8 @@ public final class Air75V3LightingController: @unchecked Sendable {
     @discardableResult
     public func setBacklight(mode: Air75BacklightMode? = nil, brightness: Int? = nil,
                              color: Air75RGBColor? = nil) throws -> [Air75LightingState] {
-        try updateAllStates { raw in
+        try requireFullLightingControl()
+        return try updateAllStates { raw in
             if let mode { raw[0] = UInt8(mode.rawValue) }
             if let brightness { raw[1] = UInt8(min(max(brightness, 0), 100)) }
             if let color {
@@ -350,7 +404,11 @@ public final class Air75V3LightingController: @unchecked Sendable {
     @discardableResult
     public func setSidelight(mode: Air75SidelightMode? = nil, brightness: Int? = nil,
                             color: Air75RGBColor? = nil) throws -> [Air75LightingState] {
-        try updateAllStates { raw in
+        try requireFullLightingControl()
+        if let mode, !supportedSidelightModes.contains(mode) {
+            throw Air75LightingError.unsupportedSidelightMode(model: deviceDisplayName, mode: mode)
+        }
+        return try updateAllStates { raw in
             if let mode { raw[9] = UInt8(mode.rawValue) }
             if let brightness { raw[10] = Air75LightingState.sidelightRawValue(fromPercent: brightness) }
             if let color {
@@ -365,8 +423,21 @@ public final class Air75V3LightingController: @unchecked Sendable {
 
     @discardableResult
     public func setStaticColor(_ color: Air75RGBColor, brightness: Int? = nil) throws -> [Air75LightingState] {
-        let states = try setBacklight(mode: .staticColor, brightness: brightness, color: color)
-        return try update(states: states) { raw in
+        try requireFullLightingControl()
+        guard supportedSidelightModes.contains(.staticColor) else {
+            throw Air75LightingError.unsupportedSidelightMode(
+                model: deviceDisplayName,
+                mode: .staticColor
+            )
+        }
+        return try updateAllStates { raw in
+            raw[0] = UInt8(Air75BacklightMode.staticColor.rawValue)
+            if let brightness { raw[1] = UInt8(min(max(brightness, 0), 100)) }
+            raw[4] = 0
+            raw[5] = 0
+            raw[6] = color.red
+            raw[7] = color.green
+            raw[8] = color.blue
             raw[9] = UInt8(Air75SidelightMode.staticColor.rawValue)
             if let brightness { raw[10] = Air75LightingState.sidelightRawValue(fromPercent: brightness) }
             raw[12] = 0
@@ -379,36 +450,36 @@ public final class Air75V3LightingController: @unchecked Sendable {
 
     @discardableResult
     public func restore(_ states: [Air75LightingState]) throws -> [Air75LightingState] {
+        try requireFullLightingControl()
         guard Set(states.map(\.handle)) == Set([0, 1]) else { throw Air75LightingError.invalidState }
-        for state in states.sorted(by: { $0.handle < $1.handle }) {
-            _ = try transact(command: Self.setLightState, length: 17, address: 0,
-                             handle: UInt8(state.handle), payload: state.raw)
-            Thread.sleep(forTimeInterval: 0.08)
-        }
-        Thread.sleep(forTimeInterval: 0.18)
-        return try readStates()
+        try validateSupportedSidelightModes(in: states)
+        let before = try readStates()
+        return try writeVerified(states, rollbackStates: before, permitsRGBQuantization: false)
     }
 
     /// Restores only bytes 9...16 (the sidelight zone), leaving the user's
     /// current backlight mode, brightness, speed and color untouched.
     @discardableResult
     public func restoreSidelight(from savedStates: [Air75LightingState]) throws -> [Air75LightingState] {
+        try requireFullLightingControl()
         guard Set(savedStates.map(\.handle)) == Set([0, 1]) else { throw Air75LightingError.invalidState }
+        try validateSupportedSidelightModes(in: savedStates)
         let currentStates = try readStates()
-        for current in currentStates.sorted(by: { $0.handle < $1.handle }) {
+        var desiredStates = currentStates
+        for index in desiredStates.indices where writableLightingHandles.contains(desiredStates[index].handle) {
+            let current = desiredStates[index]
             guard let saved = savedStates.first(where: { $0.handle == current.handle }) else {
                 throw Air75LightingError.invalidState
             }
             var raw = current.raw
             raw.replaceSubrange(9...16, with: saved.raw[9...16])
-            let acknowledgement = try transact(command: Self.setLightState, length: 17, address: 0,
-                                                handle: UInt8(current.handle), payload: raw)
-            let echoed = payload(from: acknowledgement, expectedLength: 17)
-            guard echoed == raw else { throw Air75LightingError.invalidResponse }
-            Thread.sleep(forTimeInterval: 0.08)
+            desiredStates[index] = try Air75LightingState(handle: current.handle, raw: raw)
         }
-        Thread.sleep(forTimeInterval: 0.18)
-        return try readStates()
+        return try writeVerified(
+            desiredStates,
+            rollbackStates: currentStates,
+            permitsRGBQuantization: false
+        )
     }
 
     private func updateAllStates(_ body: (inout [UInt8]) -> Void) throws -> [Air75LightingState] {
@@ -416,17 +487,122 @@ public final class Air75V3LightingController: @unchecked Sendable {
     }
 
     private func update(states: [Air75LightingState], _ body: (inout [UInt8]) -> Void) throws -> [Air75LightingState] {
-        for state in states.sorted(by: { $0.handle < $1.handle }) {
-            var raw = state.raw
+        guard Set(states.map(\.handle)) == Set([0, 1]) else { throw Air75LightingError.invalidState }
+        var desiredStates = states
+        for index in desiredStates.indices where writableLightingHandles.contains(desiredStates[index].handle) {
+            var raw = desiredStates[index].raw
             body(&raw)
-            let acknowledgement = try transact(command: Self.setLightState, length: 17, address: 0,
-                                                handle: UInt8(state.handle), payload: raw)
-            let echoed = payload(from: acknowledgement, expectedLength: 17)
-            guard echoed == raw else { throw Air75LightingError.invalidResponse }
+            desiredStates[index] = try Air75LightingState(handle: desiredStates[index].handle, raw: raw)
+        }
+        return try writeVerified(
+            desiredStates,
+            rollbackStates: states,
+            permitsRGBQuantization: true
+        )
+    }
+
+    private func writeVerified(
+        _ desiredStates: [Air75LightingState],
+        rollbackStates: [Air75LightingState],
+        permitsRGBQuantization: Bool
+    ) throws -> [Air75LightingState] {
+        let targets = desiredStates
+            .filter { writableLightingHandles.contains($0.handle) }
+            .sorted(by: { $0.handle < $1.handle })
+        guard !targets.isEmpty else { throw Air75LightingError.invalidState }
+
+        do {
+            for state in targets {
+                let acknowledgement = try transact(
+                    command: Self.setLightState,
+                    length: 17,
+                    address: 0,
+                    handle: UInt8(state.handle),
+                    payload: state.raw
+                )
+                let echoed = payload(from: acknowledgement, expectedLength: 17)
+                guard echoed == state.raw else { throw Air75LightingError.invalidResponse }
+                Thread.sleep(forTimeInterval: 0.08)
+            }
+            Thread.sleep(forTimeInterval: 0.18)
+            return try readBackUntilVerified(
+                targets: targets,
+                permitsRGBQuantization: permitsRGBQuantization
+            )
+        } catch {
+            restoreBestEffort(rollbackStates)
+            throw error
+        }
+    }
+
+    private func restoreBestEffort(_ states: [Air75LightingState]) {
+        for state in states
+            .filter({ writableLightingHandles.contains($0.handle) })
+            .sorted(by: { $0.handle < $1.handle }) {
+            _ = try? transact(
+                command: Self.setLightState,
+                length: 17,
+                address: 0,
+                handle: UInt8(state.handle),
+                payload: state.raw
+            )
             Thread.sleep(forTimeInterval: 0.08)
         }
-        Thread.sleep(forTimeInterval: 0.18)
-        return try readStates()
+    }
+
+    /// Some S4 firmwares publish the D6 acknowledgement before D5 has moved
+    /// to the new state. Retry only the readback; never resend the write while
+    /// its result is uncertain. A genuinely rejected mode still fails after
+    /// the bounded window and follows the existing rollback path.
+    private func readBackUntilVerified(
+        targets: [Air75LightingState],
+        permitsRGBQuantization: Bool
+    ) throws -> [Air75LightingState] {
+        for attempt in 0..<5 {
+            if attempt > 0 { Thread.sleep(forTimeInterval: 0.12) }
+            let states = try readStates()
+            let matches = targets.allSatisfy { expected in
+                guard let actual = states.first(where: { $0.handle == expected.handle }) else {
+                    return false
+                }
+                return Self.matchesReadback(
+                    expected: expected.raw,
+                    actual: actual.raw,
+                    permitsRGBQuantization: permitsRGBQuantization
+                )
+            }
+            if matches { return states }
+        }
+        throw Air75LightingError.stateReadbackMismatch(deviceDisplayName)
+    }
+
+    private func validateSupportedSidelightModes(in states: [Air75LightingState]) throws {
+        for state in states where writableLightingHandles.contains(state.handle) {
+            guard let mode = Air75SidelightMode(rawValue: state.sidelight.mode) else {
+                throw Air75LightingError.invalidState
+            }
+            guard supportedSidelightModes.contains(mode) else {
+                throw Air75LightingError.unsupportedSidelightMode(
+                    model: deviceDisplayName,
+                    mode: mode
+                )
+            }
+        }
+    }
+
+    private static func matchesReadback(
+        expected: [UInt8],
+        actual: [UInt8],
+        permitsRGBQuantization: Bool
+    ) -> Bool {
+        guard expected.count == 17, actual.count == 17 else { return false }
+        let rgbOffsets: Set<Int> = [6, 7, 8, 14, 15, 16]
+        return expected.indices.allSatisfy { index in
+            if permitsRGBQuantization, rgbOffsets.contains(index) {
+                return abs(Int(expected[index]) - Int(actual[index])) <= 1
+            }
+            return expected[index] == actual[index]
+        }
     }
 
     private func readStateWithRetry(handle: Int) throws -> Air75LightingState {
@@ -445,6 +621,12 @@ public final class Air75V3LightingController: @unchecked Sendable {
         throw lastError
     }
 
+    private func requireFullLightingControl() throws {
+        guard supportsFullLightingControl else {
+            throw Air75LightingError.stateWritesNotVerified(deviceDisplayName)
+        }
+    }
+
     private func payload(from response: [UInt8], expectedLength: Int) -> [UInt8] {
         Array(response[8..<(8 + expectedLength)])
     }
@@ -453,7 +635,9 @@ public final class Air75V3LightingController: @unchecked Sendable {
                           payload: [UInt8] = []) throws -> [UInt8] {
         let session = ProtocolSession(
             expectedCommand: command,
-            preferredConnection: requestedConnection
+            preferredConnection: requestedConnection,
+            wiredProductID: wiredProductID,
+            receiverProductID: receiverProductID
         )
         return try session.transact(command: command, length: length, address: address,
                                     handle: handle, payload: payload)
@@ -484,19 +668,32 @@ private final class ProtocolSession {
     private let inputBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 64)
     private let expectedCommand: UInt8
     private let preferredConnection: KeyboardLightingConnection?
+    private let wiredProductID: Int
+    private let receiverProductID: Int?
     private var response: [UInt8]?
 
-    init(expectedCommand: UInt8, preferredConnection: KeyboardLightingConnection?) {
+    init(expectedCommand: UInt8, preferredConnection: KeyboardLightingConnection?,
+         wiredProductID: Int, receiverProductID: Int?) {
         self.expectedCommand = expectedCommand
         self.preferredConnection = preferredConnection
+        self.wiredProductID = wiredProductID
+        self.receiverProductID = receiverProductID
     }
     deinit { inputBuffer.deallocate() }
 
     static func detectedConnection(
-        preferredConnection: KeyboardLightingConnection?
+        preferredConnection: KeyboardLightingConnection?,
+        wiredProductID: Int,
+        receiverProductID: Int?
     ) -> KeyboardLightingConnection? {
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
-        IOHIDManagerSetDeviceMatchingMultiple(manager, matchingDictionaries as CFArray)
+        IOHIDManagerSetDeviceMatchingMultiple(
+            manager,
+            matchingDictionaries(
+                wiredProductID: wiredProductID,
+                receiverProductID: receiverProductID
+            ) as CFArray
+        )
         let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         guard openResult == kIOReturnSuccess else { return nil }
         defer { IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone)) }
@@ -506,13 +703,28 @@ private final class ProtocolSession {
         }
         let available = Set(productIDs)
         let remembered = preferredConnection ?? ProtocolRouteMemory.shared.current()
-        if let remembered, available.contains(productID(for: remembered)) { return remembered }
-        return Air75V3LightingController.preferredConnection(forProductIDs: productIDs)
+        if let remembered,
+           let rememberedProductID = productID(
+               for: remembered,
+               wiredProductID: wiredProductID,
+               receiverProductID: receiverProductID
+           ), available.contains(rememberedProductID) { return remembered }
+        if available.contains(wiredProductID) { return .usbCable }
+        if let receiverProductID, available.contains(receiverProductID) {
+            return .twoPointFourGHzReceiver
+        }
+        return nil
     }
 
     func transact(command: UInt8, length: UInt8, address: UInt16, handle: UInt8,
                   payload: [UInt8]) throws -> [UInt8] {
-        IOHIDManagerSetDeviceMatchingMultiple(manager, Self.matchingDictionaries as CFArray)
+        IOHIDManagerSetDeviceMatchingMultiple(
+            manager,
+            Self.matchingDictionaries(
+                wiredProductID: wiredProductID,
+                receiverProductID: receiverProductID
+            ) as CFArray
+        )
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
         let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         guard openResult == kIOReturnSuccess else { throw Air75LightingError.managerOpen(openResult) }
@@ -526,8 +738,8 @@ private final class ProtocolSession {
         // back to the other verified interface if the keyboard changed mode.
         let route = preferredConnection ?? ProtocolRouteMemory.shared.current()
         let ordered = devices.sorted {
-            Self.priority(of: $0, preferredConnection: route)
-                < Self.priority(of: $1, preferredConnection: route)
+            priority(of: $0, preferredConnection: route)
+                < priority(of: $1, preferredConnection: route)
         }
         guard !ordered.isEmpty else { throw Air75LightingError.deviceNotFound }
 
@@ -536,7 +748,7 @@ private final class ProtocolSession {
             do {
                 let result = try attempt(on: device, command: command, length: length,
                                          address: address, handle: handle, payload: payload)
-                if let connection = Self.connection(of: device) {
+                if let connection = connection(of: device) {
                     ProtocolRouteMemory.shared.record(connection)
                 }
                 return result
@@ -594,7 +806,7 @@ private final class ProtocolSession {
         return response
     }
 
-    private static func priority(
+    private func priority(
         of device: IOHIDDevice,
         preferredConnection: KeyboardLightingConnection?
     ) -> Int {
@@ -602,47 +814,45 @@ private final class ProtocolSession {
            connection(of: device) == preferredConnection { return 0 }
         if preferredConnection != nil, connection(of: device) != nil { return 1 }
         let productID = (IOHIDDeviceGetProperty(device, kIOHIDProductIDKey as CFString) as? Int) ?? -1
-        if productID == Air75V3LightingController.productID { return 0 }
-        if productID == Air75V3LightingController.dongleProductID { return 1 }
+        if productID == wiredProductID { return 0 }
+        if productID == receiverProductID { return 1 }
         return 2
     }
 
-    private static func connection(of device: IOHIDDevice) -> KeyboardLightingConnection? {
+    private func connection(of device: IOHIDDevice) -> KeyboardLightingConnection? {
         let productID = (IOHIDDeviceGetProperty(
             device,
             kIOHIDProductIDKey as CFString
         ) as? NSNumber)?.intValue
-        switch productID {
-        case Air75V3LightingController.productID: return .usbCable
-        case Air75V3LightingController.dongleProductID: return .twoPointFourGHzReceiver
-        default: return nil
-        }
+        if productID == wiredProductID { return .usbCable }
+        if productID == receiverProductID { return .twoPointFourGHzReceiver }
+        return nil
     }
 
     private static func productID(
-        for connection: KeyboardLightingConnection
-    ) -> Int {
+        for connection: KeyboardLightingConnection,
+        wiredProductID: Int,
+        receiverProductID: Int?
+    ) -> Int? {
         switch connection {
-        case .usbCable: return Air75V3LightingController.productID
-        case .twoPointFourGHzReceiver: return Air75V3LightingController.dongleProductID
+        case .usbCable: return wiredProductID
+        case .twoPointFourGHzReceiver: return receiverProductID
         }
     }
 
-    private static var matchingDictionaries: [[String: Int]] {
-        [
+    private static func matchingDictionaries(
+        wiredProductID: Int,
+        receiverProductID: Int?
+    ) -> [[String: Int]] {
+        let productIDs = [wiredProductID] + (receiverProductID.map { [$0] } ?? [])
+        return productIDs.map { productID in
             [
                 kIOHIDVendorIDKey: Air75V3LightingController.vendorID,
-                kIOHIDProductIDKey: Air75V3LightingController.productID,
-                kIOHIDPrimaryUsagePageKey: 1,
-                kIOHIDPrimaryUsageKey: 0
-            ],
-            [
-                kIOHIDVendorIDKey: Air75V3LightingController.vendorID,
-                kIOHIDProductIDKey: Air75V3LightingController.dongleProductID,
+                kIOHIDProductIDKey: productID,
                 kIOHIDPrimaryUsagePageKey: 1,
                 kIOHIDPrimaryUsageKey: 0
             ]
-        ]
+        }
     }
 
     private static func makeReport(command: UInt8, length: UInt8, address: UInt16,

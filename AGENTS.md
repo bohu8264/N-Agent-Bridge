@@ -4,13 +4,13 @@
 
 ## 1. 项目目标
 
-这是一个面向 NuPhy 键盘的原生 macOS SwiftUI 菜单栏应用，把受支持型号的实体控制中继到当前 Codex Desktop。型号 Profile 与硬件写入 driver 分离；当前完整验证 Air75 V3，未知型号默认只有安全识别能力，不记录普通文字输入，不冒充 OpenAI 官方硬件，也不猜测未知固件写入协议。
+这是一个面向 NuPhy 键盘的原生 macOS SwiftUI 菜单栏应用，把受支持型号的实体控制中继到当前 Codex Desktop。型号 Profile 与硬件写入 driver 分离；当前完整验证 Air75 V3，Kick75 已完成型号识别、板载 F 区/旋钮、D8 Agent 单键状态灯及 Mac 灯光区 D6 背光/侧灯验证。未知型号默认只有安全识别能力，不记录普通文字输入，不冒充 OpenAI 官方硬件，也不猜测未知固件写入协议。
 
-当前开发版：`0.11.7 (34)`（灯光页移除无效且容易误导的背光/侧灯亮度控制；保留灯效、颜色、休眠时间及六任务状态灯；继承 0.11.6 的确认卡橙灯误判修复）。
+当前本机开发版：`0.12.5 (47)`（Kick75 IO 的 F1–F12、旋钮、完整 ANSI 自定义键 D8 Agent 状态灯、型号专属 D6 背光/侧灯及 F3/F5 灯光保持时间已接入）。
 
 - 源码根目录：本文件所在目录
-- 0.11.7 已完成界面代码清理、Debug 编译、software-only SelfTest、Universal Release、固定签名、DMG CRC/结构验证与原位安装。制品为 `dist/NAgentBridge-0.11.7-Development.dmg`，SHA-256：`bf31a20a7ab6c4a4ff42a75c07a0196414bfc08009aaf0321186ed0e4db0ec15`。
-- 当前安装位置：`/Applications/N Agent Bridge.app`，版本 `0.11.7 (34)`；升级后需复核输入监控、辅助功能、HID 和灯光诊断
+- 0.12.5 按 NuPhyIO 官方 Kick75 可见键顺序补齐 D8 布局；隐藏旋钮源项 14–16 被排除，Q=30 已完成写入、D2 回读和原色恢复实测。
+- 当前安装位置：`/Applications/N Agent Bridge.app`，版本 `0.12.5 (47)`；Kick75、USB-C 灯光通道、HID open `0`、输入监控/辅助功能均已复核正常。
 - 当前签名：固定本机身份 `N Agent Bridge Local Signing`，Bundle ID `com.nagentbridge.mac`；不是 Developer ID/Apple 公证的公开发行签名
 
 ## 2. 接手后先读
@@ -65,7 +65,7 @@
 - 最近一次实体 F11 已被识别为 usage `0x72`，Bridge 动作为 `pushToTalk / longPress`；仍需用户确认 Codex UI 中听写是否真实启动。
 - USB `GetLightState (0xD5)` / `SetLightState (0xD6)`、17-byte 背光/侧灯状态、ACK、延时回读和恢复均已实机验证。
 - 背光亮度为 17-byte 状态的 byte 1，直接使用 0–100；0.9.4 已从安装应用真实操作滑块，两个 Profile 均验证 `0x64 → 0x14 → 0x64`。不要再依赖 SwiftUI Slider 偶发缺失的 `onEditingChanged(false)` 回调。
-- 自动休眠 `GetSleepInfo (0xF3)` / `SetSleepCfg (0xF5)` 已从官方 NuPhyIO 协议确认并实机验证；Air75 V3 原值为 `01 06 18`（启用、6 分钟、保留的深度休眠字段）。应用写前持久备份、只修改启用位与分钟数、保留第三字节，并要求 ACK 与延时回读完全一致；失败时恢复原值。
+- 自动休眠 `GetSleepInfo (0xF3)` / `SetSleepCfg (0xF5)` 已从官方 NuPhyIO 协议确认，并分别在 Air75 V3 与 Kick75 实机验证；两把当前原值均为 `01 06 18`（启用、6 分钟、保留的深度休眠字段）。应用写前持久备份、只修改启用位与分钟数、保留第三字节，并要求 ACK 与延时回读完全一致；失败时恢复原值。
 - 任务侧灯五色已验证：白色空闲、蓝色推理、绿色完成、橙色待确认、红色报错；只修改侧灯字节 9–16。0.7.0 起侧灯显示六任务聚合（红 > 橙 > 蓝 > 绿 > 白）。
 - 0.8.0 起五种侧灯颜色可自定义；写入仍只走已验证的侧灯字段、备份、ACK 与完整回读流程。
 - 0.8.0 起 12 个 Codex 动作可学习到普通键盘 Usage；普通键只在 Codex 控制开启时由 session tap 消费，媒体键不开放学习。
@@ -77,7 +77,8 @@
 - 0.11.0 查询线程 ID、标题、cwd、recency 与本机未读 ID；不查询提示词、回答或预览。四种 Agent 来源模式最终都绑定线程 ID，不再把 Command+1...6/侧栏位置当身份。
 - 0.11.2 自定义分配额外只读 Codex 全局状态中的 `local-projects`、`project-order` 与 `thread-project-assignments` 结构字段，以 Codex 自己的项目层级展示最多 500 个未归档用户对话。0.11.4 读取 `thread-descriptions-v1` 仍会遗漏主任务；0.11.5 已改为 app-server `thread/list(useStateDbOnly: true)` 的正式 `Thread.name`，持久化短描述和 SQLite `title` 仅作兼容兜底。状态解析仍只处理最近 50 个及置顶/自定义精确 ID。
 - Air75 V3 ANSI 的 NuPhyIO 可见键顺序与 `skipPos=14/skipSize=3` 已编码为灯位表：例如 F1 = 1、数字 1 = 16。Agent 动作学习到新实体键后，灯位随绑定保存和交换。
-- Air65 V3、Air100 V3、Kick75、Node75、Node100 的官方应用 PID/别名已加入 Profile；当前只开放软件按键模式。没有实机备份/ACK/回读前，不给这些 Profile 注册硬件 driver。
+- Air65 V3、Air100 V3、Node75、Node100 的官方应用 PID/别名已加入 Profile，当前只开放软件按键模式。Kick75 IO（`19F5:1026`）已注册独立 keymap driver（8 层、6x15+2、1472 bytes）以及 D8 Agent 状态灯、D6 背光/侧灯 driver；D6 只写实机验证通过的 Mac handle 0，Windows handle 1 永不写入。
+- Kick75 官方 NuPhyIO 只开放侧灯 0 流光、1 霓虹、2 常亮、3 呼吸；模式 4“律动”只属于 Air75 V3。曾被写入 4 时，Kick75 会 ACK 但忽略后续 D6 模式切换，需按实体键 `Fn + M + ←` 恢复一次；产品 UI 不得再向 Kick75 暴露模式 4。
 - 其他配置器（NuPhyIO 等）会通过 `SetSecretKey (0xEE)` 给固件设置 XOR 会话密钥，导致本应用读到稳定乱码；控制器已内置 sessionKeyConflict 检测。诊断"灯光状态无效"时先想到这一点，不要先怀疑硬件。
 - 官方 U1 2.4G 接收器 VID `0x19F5` / PID `0x2620` 暴露同一 S4 配置通道；用户实机已经枚举到 usage `1:0`、64-byte Input/Output。0.9.8 在数据线拔除、只保留 U1 时完成 D5/D6 状态侧灯写入、ACK 与回读，推理蓝色已验证；A1/F3 是否由接收器转发不再影响 RGB 就绪。蓝牙无官方配置通道（bleConnectionConfig=null）；当前固件不可能由普通 macOS 应用实时写侧灯 RGB。
 - 运行 SelfTest 或 Probe 的硬件测试前必须先从菜单栏退出正在运行的 N Agent Bridge；两个进程并发访问 vendor 通道会互相污染响应。
@@ -136,7 +137,7 @@
 - [ ] 在干净 Mac 做拖拽安装、首次授权、Codex 重启、登录启动、升级和卸载验收。
 - [x] 把新固件 `0xD8`、实机索引和侧灯恢复结论同步到 `docs/LIGHTING-PROTOCOL.md`。
 - [x] 加入 Air65 V3、Air100 V3、Kick75、Node75、Node100 官方身份 Profile 与软件模式能力分级。
-- [ ] 分别拿到五个型号实机后，逐型号验证板载键位长度、D5/D6、D8 灯位、U1 路由和恢复，验证一个注册一个 driver。
+- [ ] 继续按型号验证 Air65 V3、Air100 V3、Node75、Node100 的板载键位长度、D5/D6、D8 灯位、U1 路由和恢复；Kick75 还需验证 D6 规范化语义与 U1 路由。
 
 ## 7. 构建与验证
 

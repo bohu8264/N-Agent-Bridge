@@ -33,7 +33,11 @@ struct Air75AgentBridgeApp: App {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button(store.configuration.enabled ? "停止并恢复键盘" : "启用控制") {
-                    store.configuration.enabled ? store.disable() : store.oneClickEnable()
+                    if store.configuration.enabled && !store.currentHardwareProfileNeedsInstallation {
+                        store.disable()
+                    } else {
+                        store.oneClickEnable()
+                    }
                 }
                 Divider()
                 Button("打开 N Agent Bridge") { NSApp.activate(ignoringOtherApps: true); NSApp.windows.first?.makeKeyAndOrderFront(nil) }

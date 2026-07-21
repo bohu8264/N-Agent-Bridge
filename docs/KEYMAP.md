@@ -16,6 +16,6 @@
 
 0.9.5 起，按键学习会识别 IOHID 键盘数组报告：`usage 0xFFFFFFFF` 只是数组占位值，绝不是可保存的实体键。学习器只从报告 value 提取受支持的真实 Usage，并拒绝 0/1 等占位值；schema 7 会自动修复旧配置中的无效绑定，运行时映射也会忽略它。
 
-0.11.0 起，绑定同时保存可选的 `signalLightIndex`。Air75 V3 ANSI 的索引来自 NuPhyIO 官方可见键顺序，并应用 `skipPos=14 / skipSize=3` 去除三个隐藏旋钮项；F1 为 1，数字 1 为 16。Agent 1–6 学到新实体键时，灯位随同保存；两个动作交换实体键时灯位也交换。没有已验证 `signalLightLayoutID` 的型号只保存 Usage，不执行 D8 灯位写入。
+0.11.0 起，绑定同时保存可选的 `signalLightIndex`。Air75 V3 ANSI 的索引来自 NuPhyIO 官方可见键顺序，并应用 `skipPos=14 / skipSize=3` 去除三个隐藏旋钮项；F1 为 1，数字 1 为 16。Kick75 也按官方数组排除源位置 14–16 的三个隐藏旋钮项；F1 为 1、Q 为 30。Agent 1–6 学到新实体键时，灯位随 Usage 实时解析；两个动作交换实体键时灯位也交换。没有已验证 `signalLightLayoutID` 的型号只保存 Usage，不执行 D8 灯位写入。
 
 Agent 1–6 的目标由最近、置顶、优先、自定义四种来源策略选出，最终都保存/使用线程 ID。实体键不会再通过 Command+1…6 猜测侧栏位置，而是打开 `codex://threads/<thread-id>`。

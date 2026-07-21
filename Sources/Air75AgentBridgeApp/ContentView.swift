@@ -158,7 +158,7 @@ struct OnboardingView: View {
                     number: "1",
                     title: "连接受支持的 NuPhy 键盘",
                     detail: usbConnected ? "已通过 USB-C 识别" : "请使用可传输数据的 USB-C 线",
-                    complete: usbConnected || store.configuration.hardwareProfileInstalled == true
+                    complete: usbConnected || store.configuration.hasAnyInstalledHardwareProfile
                 )
                 Divider().padding(.leading, 58)
                 SetupRow(
@@ -179,7 +179,7 @@ struct OnboardingView: View {
                     detail: store.configuration.enabled ? "专用按键与旋钮已经可以使用" : "自动备份并写入当前型号的专用控制层",
                     complete: store.configuration.enabled,
                     buttonTitle: store.configuration.enabled ? nil : "启用",
-                    buttonEnabled: usbConnected || store.configuration.hardwareProfileInstalled == true,
+                    buttonEnabled: usbConnected || store.configuration.hasAnyInstalledHardwareProfile,
                     action: { store.oneClickEnable() }
                 )
             }
@@ -284,8 +284,10 @@ struct OverviewView: View {
     }
 
     private var heroSubtitle: String {
-        if isReady, store.configuration.hardwareProfileInstalled == true {
-            return "自定义按键、旋钮与 Agent 状态灯正在与 Codex 协同工作。"
+        if isReady, store.installedHardwareProfileIsCurrent {
+            return store.signalLightingSupported
+                ? "自定义按键、旋钮与 Agent 状态灯正在与 Codex 协同工作。"
+                : "\(store.currentModelName) 的 F1–F12 与旋钮正在控制 Codex；当前型号灯光仍保持键盘原生效果。"
         }
         if isReady { return "自定义按键正在安全的软件模式下控制 Codex；未写入未经验证的键盘固件。" }
         if store.currentDevice == nil { return "打开键盘并连接蓝牙，首次设置请使用 USB-C。" }
@@ -317,7 +319,9 @@ struct OverviewView: View {
                     ProgressView().tint(.white).controlSize(.large)
                 } else {
                     Button(primaryActionTitle) {
-                        if store.configuration.enabled { store.disable() }
+                        if store.configuration.enabled && !store.currentHardwareProfileNeedsInstallation {
+                            store.disable()
+                        }
                         else { store.oneClickEnable() }
                     }
                     .buttonStyle(.borderedProminent)
@@ -408,10 +412,11 @@ struct OverviewView: View {
     }
 
     private var primaryActionTitle: String {
+        if store.currentHardwareProfileNeedsInstallation { return "配置 \(store.currentModelName)" }
         if store.configuration.enabled {
-            return store.configuration.hardwareProfileInstalled == true ? "停止并恢复键盘" : "停止控制"
+            return store.installedHardwareProfileIsCurrent ? "停止并恢复键盘" : "停止控制"
         }
-        if store.configuration.hardwareProfileInstalled == true { return "启用控制" }
+        if store.installedHardwareProfileIsCurrent { return "启用控制" }
         return "连接并启用"
     }
 
@@ -478,7 +483,7 @@ struct ControlsView: View {
 
             PremiumCard {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                    ForEach(Array(store.configuration.keyBindings.enumerated()), id: \.offset) { index, binding in
+                    ForEach(Array(store.activeKeyBindings.enumerated()), id: \.offset) { index, binding in
                         KeyActionRow(
                             functionKey: "\(index + 1)",
                             key: binding.displayName,
@@ -491,11 +496,11 @@ struct ControlsView: View {
             }
 
             if let learningIndex = store.learningBindingIndex,
-               store.configuration.keyBindings.indices.contains(learningIndex) {
+               store.activeKeyBindings.indices.contains(learningIndex) {
                 InlineNotice(
                     icon: "keyboard.badge.ellipsis",
                     title: "请按新的实体键",
-                    text: "正在设置 \(store.configuration.keyBindings[learningIndex].action.displayName)。支持数字、字母、F 区和导航键；重复键会自动交换。",
+                    text: "正在设置 \(store.activeKeyBindings[learningIndex].action.displayName)。支持数字、字母、F 区和导航键；重复键会自动交换。",
                     color: .accentColor,
                     buttonTitle: "取消",
                     action: store.cancelLearningBinding
@@ -835,7 +840,16 @@ struct LightingView: View {
                             .foregroundStyle(.orange)
                     }
                 }
-                .disabled(!store.lightingAvailable || store.lightingBusy)
+                .disabled(!store.lightingAvailable || store.lightingBusy || !store.fullLightingControlSupported)
+                .overlay(alignment: .bottomLeading) {
+                    if store.lightingAvailable && !store.fullLightingControlSupported {
+                        Text("当前型号仅开放已验证的 Agent 单键状态灯；普通背光保持键盘原设置。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 10)
+                    }
+                }
             }
 
             PremiumCard {
@@ -900,11 +914,24 @@ struct LightingView: View {
                                 Text("普通侧灯灯效").font(.subheadline.weight(.medium))
                                 Spacer()
                                 Picker("侧灯灯效", selection: Binding(
-                                    get: { Air75SidelightMode(rawValue: store.lightingStates.first?.sidelight.mode ?? 4) ?? .rhythm },
-                                    set: { store.setSidelightMode($0) }
+                                    get: {
+                                        store.lightingStates.first?.sidelight.mode
+                                            ?? store.supportedSidelightModes.first?.rawValue
+                                            ?? 0
+                                    },
+                                    set: { rawValue in
+                                        if let mode = Air75SidelightMode(rawValue: rawValue),
+                                           store.supportedSidelightModes.contains(mode) {
+                                            store.setSidelightMode(mode)
+                                        }
+                                    }
                                 )) {
-                                    ForEach(Air75SidelightMode.allCases) { mode in
-                                        Text(mode.displayName).tag(mode)
+                                    if store.sidelightModeNeedsHardwareRecovery,
+                                       let current = store.lightingStates.first?.sidelight.mode {
+                                        Text("需要恢复").tag(current)
+                                    }
+                                    ForEach(store.supportedSidelightModes) { mode in
+                                        Text(mode.displayName).tag(mode.rawValue)
                                     }
                                 }
                                 .labelsHidden()
@@ -926,8 +953,16 @@ struct LightingView: View {
                                     .help("侧灯 · \(item.name)")
                                 }
                             }
+                            if store.sidelightModeNeedsHardwareRecovery {
+                                Label(
+                                    "Kick75 当前侧灯模式不受支持，请按一次 Fn + M + ← 恢复",
+                                    systemImage: "exclamationmark.triangle"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                            }
                     }
-                    .disabled(!store.lightingAvailable || store.lightingBusy)
+                    .disabled(!store.lightingAvailable || store.lightingBusy || !store.fullLightingControlSupported)
                 }
             }
 
@@ -1072,9 +1107,17 @@ struct SettingsView: View {
                         value: store.configuration.enabled ? "已开启" : "已暂停",
                         good: store.configuration.enabled,
                         buttonTitle: store.configuration.enabled
-                            ? (store.configuration.hardwareProfileInstalled == true ? "停止并恢复" : "停止")
+                            ? (store.currentHardwareProfileNeedsInstallation
+                                ? "配置"
+                                : (store.installedHardwareProfileIsCurrent ? "停止并恢复" : "停止"))
                             : "启用",
-                        action: { store.configuration.enabled ? store.disable() : store.oneClickEnable() }
+                        action: {
+                            if store.configuration.enabled && !store.currentHardwareProfileNeedsInstallation {
+                                store.disable()
+                            } else {
+                                store.oneClickEnable()
+                            }
+                        }
                     )
                     Divider()
                     HStack {

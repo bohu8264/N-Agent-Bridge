@@ -7,54 +7,65 @@ private final class ProtocolProbe {
     private let inputBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 64)
     private var response: [UInt8]?
     private let targetProductID: Int?
+    private var device: IOHIDDevice?
+    private var expectedCommand: UInt8?
+    private var isOpen = false
 
     init(targetProductID: Int? = nil) {
         self.targetProductID = targetProductID
     }
 
-    deinit { inputBuffer.deallocate() }
-
-    func transact(command: UInt8, length: UInt8, address: UInt16, handle: UInt8,
-                  payload: [UInt8] = []) throws -> [UInt8] {
-        // 匹配有线键盘 (0x1028) 与官方 U1 2.4G 接收器 (0x2620)，二者说同一协议。
-        let allMatches: [[String: Int]] = [
-            [
-                kIOHIDVendorIDKey: 0x19F5,
-                kIOHIDProductIDKey: 0x1028,
-                kIOHIDPrimaryUsagePageKey: 1,
-                kIOHIDPrimaryUsageKey: 0
-            ],
-            [
-                kIOHIDVendorIDKey: 0x19F5,
-                kIOHIDProductIDKey: 0x2620,
-                kIOHIDPrimaryUsagePageKey: 1,
-                kIOHIDPrimaryUsageKey: 0
-            ]
-        ]
-        let matches = targetProductID.map { target in
-            allMatches.filter { $0[kIOHIDProductIDKey] == target }
-        } ?? allMatches
-        IOHIDManagerSetDeviceMatchingMultiple(manager, matches as CFArray)
-        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
-        let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
-        guard openResult == kIOReturnSuccess else { throw ProbeError.managerOpen(openResult) }
-        defer {
+    deinit {
+        if isOpen {
             IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
             IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         }
-        let candidates = (IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice>) ?? []
-        func rank(_ device: IOHIDDevice) -> Int {
-            (IOHIDDeviceGetProperty(device, kIOHIDProductIDKey as CFString) as? Int) == 0x1028 ? 0 : 1
+        inputBuffer.deallocate()
+    }
+
+    func transact(command: UInt8, length: UInt8, address: UInt16, handle: UInt8,
+                  payload: [UInt8] = []) throws -> [UInt8] {
+        // 匹配 Air75 V3、官方 U1 接收器，或由 --product-id 明确指定的
+        // NuPhy 型号。自定义 PID 只开放给下方显式命令，不会扩大产品代码
+        // 中已验证的写入驱动范围。
+        var productIDs = [0x1028, 0x2620]
+        if let targetProductID, !productIDs.contains(targetProductID) {
+            productIDs.append(targetProductID)
         }
-        guard let device = candidates.sorted(by: { rank($0) < rank($1) }).first else {
-            throw ProbeError.deviceNotFound
+        let allMatches: [[String: Int]] = productIDs.map { productID in
+            [
+                kIOHIDVendorIDKey: 0x19F5,
+                kIOHIDProductIDKey: productID,
+                kIOHIDPrimaryUsagePageKey: 1,
+                kIOHIDPrimaryUsageKey: 0
+            ]
+        }
+        let matches = targetProductID.map { target in
+            allMatches.filter { $0[kIOHIDProductIDKey] == target }
+        } ?? allMatches
+        if !isOpen {
+            IOHIDManagerSetDeviceMatchingMultiple(manager, matches as CFArray)
+            IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
+            let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+            guard openResult == kIOReturnSuccess else { throw ProbeError.managerOpen(openResult) }
+            isOpen = true
+            let candidates = (IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice>) ?? []
+            func rank(_ device: IOHIDDevice) -> Int {
+                (IOHIDDeviceGetProperty(device, kIOHIDProductIDKey as CFString) as? Int) == 0x1028 ? 0 : 1
+            }
+            guard let selected = candidates.sorted(by: { rank($0) < rank($1) }).first else {
+                throw ProbeError.deviceNotFound
+            }
+            device = selected
+            inputBuffer.initialize(repeating: 0, count: 64)
+            let context = Unmanaged.passUnretained(self).toOpaque()
+            IOHIDDeviceRegisterInputReportCallback(selected, inputBuffer, 64, Self.inputReport, context)
         }
 
-        inputBuffer.initialize(repeating: 0, count: 64)
-        let context = Unmanaged.passUnretained(self).toOpaque()
-        IOHIDDeviceRegisterInputReportCallback(device, inputBuffer, 64, Self.inputReport, context)
+        guard let device else { throw ProbeError.deviceNotFound }
 
         response = nil
+        expectedCommand = command
         var report = Self.makeReport(command: command, length: length, address: address,
                                      handle: handle, payload: payload)
         let reportLength = report.count
@@ -67,7 +78,42 @@ private final class ProtocolProbe {
         let deadline = Date().addingTimeInterval(1.5)
         while response == nil && RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02)) && Date() < deadline {}
         guard let response else { throw ProbeError.timeout }
+        try Self.validate(response: response, command: command, length: length,
+                          address: address, handle: handle)
         return response
+    }
+
+    static func payload(from response: [UInt8], expectedLength: Int) throws -> [UInt8] {
+        guard expectedLength >= 0, response.count >= 8 + expectedLength,
+              Int(response[4]) >= expectedLength else {
+            throw ProbeError.verificationFailed("response payload is shorter than expected")
+        }
+        return Array(response[8..<(8 + expectedLength)])
+    }
+
+    private static func validate(response: [UInt8], command: UInt8, length: UInt8,
+                                 address: UInt16, handle: UInt8) throws {
+        guard response.count == 64, response[0] == 0xAA, response[1] == command else {
+            throw ProbeError.verificationFailed("invalid S4 response header")
+        }
+        let checksum = UInt8(response[4...].reduce(0) { ($0 + Int($1)) & 0xFF })
+        guard checksum == response[3] else {
+            throw ProbeError.verificationFailed("invalid S4 response checksum")
+        }
+        let keyCandidates: Set<UInt8> = [
+            response[4] ^ length,
+            response[5] ^ UInt8(address & 0xFF),
+            response[6] ^ UInt8((address >> 8) & 0xFF),
+            response[7] ^ handle
+        ]
+        if keyCandidates.count == 1, let key = keyCandidates.first, key != 0 {
+            throw ProbeError.verificationFailed(
+                "another configurator left session key 0x\(String(format: "%02X", key)) active"
+            )
+        }
+        guard Int(response[4]) >= Int(length) else {
+            throw ProbeError.verificationFailed("S4 response length is shorter than requested")
+        }
     }
 
     static func makeReport(command: UInt8, length: UInt8, address: UInt16, handle: UInt8,
@@ -88,7 +134,10 @@ private final class ProtocolProbe {
     private static let inputReport: IOHIDReportCallback = { context, result, _, _, _, report, length in
         guard result == kIOReturnSuccess, let context else { return }
         let probe = Unmanaged<ProtocolProbe>.fromOpaque(context).takeUnretainedValue()
-        probe.response = Array(UnsafeBufferPointer(start: report, count: length))
+        let bytes = Array(UnsafeBufferPointer(start: report, count: length))
+        guard bytes.count >= 2, bytes[0] == 0xAA,
+              probe.expectedCommand == bytes[1] else { return }
+        probe.response = bytes
     }
 }
 
@@ -108,6 +157,180 @@ private enum ProbeError: LocalizedError {
         case .verificationFailed(let detail): return "硬件回读验证失败：\(detail)"
         }
     }
+}
+
+private func hexBytes(_ bytes: [UInt8]) -> String {
+    bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+}
+
+private func kick75ReadState(_ probe: ProtocolProbe, handle: Int) throws -> [UInt8] {
+    let response = try probe.transact(
+        command: 0xD5,
+        length: 17,
+        address: 0,
+        handle: UInt8(handle)
+    )
+    return try ProtocolProbe.payload(from: response, expectedLength: 17)
+}
+
+@discardableResult
+private func kick75WriteState(_ probe: ProtocolProbe, handle: Int,
+                              desired: [UInt8],
+                              toleratedDeltas: [Int: Int] = [:]) throws -> [UInt8] {
+    guard desired.count == 17 else {
+        throw ProbeError.verificationFailed("Kick75 D6 payload must contain 17 bytes")
+    }
+    let acknowledgement = try probe.transact(
+        command: 0xD6,
+        length: 17,
+        address: 0,
+        handle: UInt8(handle),
+        payload: desired
+    )
+    let echoed = try ProtocolProbe.payload(from: acknowledgement, expectedLength: 17)
+    guard echoed == desired else {
+        throw ProbeError.verificationFailed(
+            "Kick75 D6 handle \(handle) ACK differs: expected \(hexBytes(desired)); got \(hexBytes(echoed))"
+        )
+    }
+    Thread.sleep(forTimeInterval: 0.22)
+    let readback = try kick75ReadState(probe, handle: handle)
+    let offsets = desired.indices.filter { byteIndex in
+        abs(Int(desired[byteIndex]) - Int(readback[byteIndex]))
+            > (toleratedDeltas[byteIndex] ?? 0)
+    }
+    guard offsets.isEmpty else {
+        throw ProbeError.verificationFailed(
+            "Kick75 D6 handle \(handle) readback differs at offsets "
+                + offsets.map(String.init).joined(separator: ", ")
+                + ": expected \(hexBytes(desired)); got \(hexBytes(readback))"
+        )
+    }
+    return readback
+}
+
+private func kick75RestoreStates(_ probe: ProtocolProbe,
+                                 originals: [Int: [UInt8]],
+                                 handles: [Int] = [0, 1]) throws {
+    for handle in handles {
+        guard let original = originals[handle] else {
+            throw ProbeError.verificationFailed("Kick75 restore is missing handle \(handle)")
+        }
+        _ = try kick75WriteState(probe, handle: handle, desired: original)
+    }
+    Thread.sleep(forTimeInterval: 0.25)
+    for handle in handles {
+        guard let original = originals[handle] else { continue }
+        let readback = try kick75ReadState(probe, handle: handle)
+        guard readback == original else {
+            throw ProbeError.verificationFailed(
+                "Kick75 final restore mismatch on handle \(handle)"
+            )
+        }
+    }
+}
+
+private func kick75ReadAllColors(_ probe: ProtocolProbe, ledCount: Int) throws -> [UInt8] {
+    guard ledCount > 0, ledCount <= 104 else {
+        throw ProbeError.verificationFailed("Kick75 LED count is outside the safe range")
+    }
+    let byteCount = ledCount * 3
+    var bytes: [UInt8] = []
+    bytes.reserveCapacity(byteCount)
+    var address = 0
+    while address < byteCount {
+        let chunk = min(54, byteCount - address)
+        let response = try probe.transact(
+            command: 0xD2,
+            length: UInt8(chunk),
+            address: UInt16(address),
+            handle: 0
+        )
+        bytes.append(contentsOf: try ProtocolProbe.payload(from: response, expectedLength: chunk))
+        address += chunk
+    }
+    return bytes
+}
+
+private func kick75ReadSignalLight(_ probe: ProtocolProbe, index: UInt8) throws -> Air75SignalLight {
+    let response = try probe.transact(
+        command: 0xD2,
+        length: 3,
+        address: UInt16(index) * 3,
+        handle: 0
+    )
+    let raw = try ProtocolProbe.payload(from: response, expectedLength: 3)
+    return Air75SignalLight(
+        index: index,
+        color: Air75RGBColor(red: raw[0], green: raw[1], blue: raw[2])
+    )
+}
+
+@discardableResult
+private func kick75WriteSignalLight(
+    _ probe: ProtocolProbe,
+    light: Air75SignalLight
+) throws -> Air75SignalLight {
+    let payload = light.encodedBytes
+    let acknowledgement = try probe.transact(
+        command: 0xD8,
+        length: UInt8(payload.count),
+        address: 0,
+        handle: 0,
+        payload: payload
+    )
+    let echoed = try ProtocolProbe.payload(from: acknowledgement, expectedLength: payload.count)
+    guard echoed == payload else {
+        throw ProbeError.verificationFailed("Kick75 D8 single-light ACK mismatch")
+    }
+    Thread.sleep(forTimeInterval: 0.18)
+    let readback = try kick75ReadSignalLight(probe, index: light.index)
+    guard readback == light else {
+        throw ProbeError.verificationFailed(
+            "Kick75 D2 index \(light.index) readback differs from D8 target"
+        )
+    }
+    return readback
+}
+
+private func kick75ReadSleepConfiguration(_ probe: ProtocolProbe) throws -> KeyboardSleepConfiguration {
+    let response = try probe.transact(
+        command: 0xF3,
+        length: 3,
+        address: 0,
+        handle: 0
+    )
+    return try KeyboardSleepConfiguration(
+        raw: ProtocolProbe.payload(from: response, expectedLength: 3)
+    )
+}
+
+@discardableResult
+private func kick75WriteSleepConfiguration(
+    _ probe: ProtocolProbe,
+    desired: KeyboardSleepConfiguration
+) throws -> KeyboardSleepConfiguration {
+    let acknowledgement = try probe.transact(
+        command: 0xF5,
+        length: 3,
+        address: 0,
+        handle: 0,
+        payload: desired.raw
+    )
+    let echoed = try ProtocolProbe.payload(from: acknowledgement, expectedLength: 3)
+    guard echoed == desired.raw else {
+        throw ProbeError.verificationFailed(
+            "Kick75 F5 ACK differs: expected \(hexBytes(desired.raw)); got \(hexBytes(echoed))"
+        )
+    }
+    Thread.sleep(forTimeInterval: 0.22)
+    let readback = try kick75ReadSleepConfiguration(probe)
+    guard readback == desired else {
+        throw ProbeError.verificationFailed(
+            "Kick75 F3 readback differs: expected \(hexBytes(desired.raw)); got \(hexBytes(readback.raw))"
+        )
+    }
+    return readback
 }
 
 private func value(after flag: String, default defaultValue: Int) -> Int {
@@ -131,19 +354,425 @@ let targetProductID = text(after: "--connection").flatMap { value -> Int? in
     case "2.4g", "2.4ghz", "dongle", "receiver": return Air75V3LightingController.dongleProductID
     default: return nil
     }
+} ?? text(after: "--product-id").flatMap { value in
+    value.lowercased().hasPrefix("0x")
+        ? Int(value.dropFirst(2), radix: 16)
+        : Int(value)
 }
 let writeCurrentTest = CommandLine.arguments.contains("--write-current-test")
 let controllerStaticTest = CommandLine.arguments.contains("--controller-static-test")
 let controllerSidelightStatusTest = CommandLine.arguments.contains("--controller-sidelight-status-test")
 let controllerBacklightBrightnessTest = CommandLine.arguments.contains("--controller-backlight-brightness-test")
 let signalLightTest = CommandLine.arguments.contains("--signal-light-test")
+let kick75D6Observe = CommandLine.arguments.contains("--kick75-d6-observe")
+let kick75D6Validate = CommandLine.arguments.contains("--kick75-d6-validate")
+let kick75SidelightLatency = CommandLine.arguments.contains("--kick75-sidelight-latency")
+let kick75SleepValidate = CommandLine.arguments.contains("--kick75-sleep-validate")
+let kick75QSignalValidate = CommandLine.arguments.contains("--kick75-q-signal-validate")
 let keymapDryRun = CommandLine.arguments.contains("--keymap-dry-run")
+let s4KeymapRead = CommandLine.arguments.contains("--s4-keymap-read")
 let installBridgeProfile = CommandLine.arguments.contains("--install-bridge-profile")
 let explicitPayload = text(after: "--payload-hex").map { value in
     value.split(whereSeparator: { $0 == "," || $0 == ":" || $0 == " " }).compactMap { UInt8($0, radix: 16) }
 }
 
 do {
+    if kick75QSignalValidate {
+        guard targetProductID == Kick75KeymapController.productID else {
+            throw ProbeError.verificationFailed(
+                "--kick75-q-signal-validate requires --product-id 0x1026"
+            )
+        }
+        let expectedQIndex = 30
+        guard SignalLightLayout.index(
+            layoutID: "nuphy.kick75.ansi-d8",
+            usagePage: 0x07,
+            usage: 0x14
+        ) == expectedQIndex else {
+            throw ProbeError.verificationFailed("Kick75 official Q index is not 30")
+        }
+        let probe = ProtocolProbe(targetProductID: targetProductID)
+        let index = UInt8(expectedQIndex)
+        let original = try kick75ReadSignalLight(probe, index: index)
+        let backupDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Air75AgentBridge/Backups", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: backupDirectory,
+            withIntermediateDirectories: true
+        )
+        let stamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let backupURL = backupDirectory.appendingPathComponent(
+            "\(stamp)-kick75-q-signal-light.json"
+        )
+        let backupObject: [String: Any] = [
+            "schemaVersion": 1,
+            "profileID": "nuphy.kick75",
+            "index": Int(index),
+            "red": Int(original.color.red),
+            "green": Int(original.color.green),
+            "blue": Int(original.color.blue),
+            "note": "Kick75 官方布局 Q=30 的 D8/D2 实机验证前原色。",
+        ]
+        let backupData = try JSONSerialization.data(
+            withJSONObject: backupObject,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        try backupData.write(to: backupURL, options: [.atomic, .completeFileProtection])
+        guard (try Data(contentsOf: backupURL)) == backupData else {
+            throw ProbeError.verificationFailed("Kick75 Q color backup readback failed")
+        }
+        let testColor = original.color == Air75RGBColor(red: 0x16, green: 0x8B, blue: 0xFF)
+            ? Air75RGBColor(red: 0xFF, green: 0x60, blue: 0x20)
+            : Air75RGBColor(red: 0x16, green: 0x8B, blue: 0xFF)
+        let testLight = Air75SignalLight(index: index, color: testColor)
+        print("backup: \(backupURL.path)")
+        print("Q candidate index: \(index); original: \(hexBytes([original.color.red, original.color.green, original.color.blue]))")
+
+        var needsEmergencyRestore = true
+        defer {
+            if needsEmergencyRestore {
+                do {
+                    _ = try kick75WriteSignalLight(probe, light: original)
+                    fputs("EMERGENCY RESTORE: verified\n", stderr)
+                } catch {
+                    fputs("EMERGENCY RESTORE FAILED: \(error.localizedDescription)\n", stderr)
+                }
+            }
+        }
+        _ = try kick75WriteSignalLight(probe, light: testLight)
+        print("D8 Q test color ACK + D2 exact readback verified")
+        _ = try kick75WriteSignalLight(probe, light: original)
+        let final = try kick75ReadSignalLight(probe, index: index)
+        guard final == original else {
+            throw ProbeError.verificationFailed("Kick75 Q color final restore mismatch")
+        }
+        needsEmergencyRestore = false
+        print("Kick75 Q index 30 validation PASS; original color restored")
+        exit(0)
+    }
+
+    if kick75SleepValidate {
+        guard targetProductID == Kick75KeymapController.productID else {
+            throw ProbeError.verificationFailed(
+                "--kick75-sleep-validate requires --product-id 0x1026"
+            )
+        }
+        let probe = ProtocolProbe(targetProductID: targetProductID)
+        let original = try kick75ReadSleepConfiguration(probe)
+        let backupURL = try ConfigurationStore().createSleepBackup(
+            configuration: original,
+            note: "Kick75 F3/F5 休眠设置实机验证前读取的完整三字节原始配置。",
+            profileID: "nuphy.kick75",
+            deviceFingerprint: nil
+        )
+        print("backup: \(backupURL.path)")
+        print("original: \(hexBytes(original.raw))")
+
+        var needsEmergencyRestore = true
+        defer {
+            if needsEmergencyRestore {
+                do {
+                    _ = try kick75WriteSleepConfiguration(probe, desired: original)
+                    fputs("EMERGENCY RESTORE: verified\n", stderr)
+                } catch {
+                    fputs("EMERGENCY RESTORE FAILED: \(error.localizedDescription)\n", stderr)
+                }
+            }
+        }
+
+        _ = try kick75WriteSleepConfiguration(probe, desired: original)
+        print("F5 no-op ACK + F3 exact readback verified")
+
+        let alwaysOn = try original.settingAutoSleep(afterMinutes: nil)
+        _ = try kick75WriteSleepConfiguration(probe, desired: alwaysOn)
+        print("temporary always-on: \(hexBytes(alwaysOn.raw)); exact readback verified")
+
+        _ = try kick75WriteSleepConfiguration(probe, desired: original)
+        let final = try kick75ReadSleepConfiguration(probe)
+        guard final == original else {
+            throw ProbeError.verificationFailed("Kick75 final sleep restore mismatch")
+        }
+        needsEmergencyRestore = false
+        print("Kick75 F3/F5 validation PASS; final restore: \(hexBytes(final.raw))")
+        exit(0)
+    }
+
+    if kick75SidelightLatency {
+        guard targetProductID == Kick75KeymapController.productID else {
+            throw ProbeError.verificationFailed(
+                "--kick75-sidelight-latency requires --product-id 0x1026"
+            )
+        }
+        let probe = ProtocolProbe(targetProductID: targetProductID)
+        let original0 = try kick75ReadState(probe, handle: 0)
+        let original1 = try kick75ReadState(probe, handle: 1)
+        let parsedStates = try [
+            Air75LightingState(handle: 0, raw: original0),
+            Air75LightingState(handle: 1, raw: original1),
+        ]
+        let backupURL = try ConfigurationStore().createLightingBackup(
+            states: parsedStates,
+            note: "Kick75 官方侧灯 0–3 模式 D5 延迟采样前的完整双 handle 状态。",
+            profileID: "nuphy.kick75",
+            deviceFingerprint: nil
+        )
+        print("backup: \(backupURL.path)")
+        print("original h0: \(hexBytes(original0))")
+        print("original h1: \(hexBytes(original1))")
+
+        var needsEmergencyRestore = true
+        defer {
+            if needsEmergencyRestore {
+                do {
+                    try kick75RestoreStates(probe, originals: [0: original0], handles: [0])
+                    fputs("EMERGENCY RESTORE: verified\n", stderr)
+                } catch {
+                    fputs("EMERGENCY RESTORE FAILED: \(error.localizedDescription)\n", stderr)
+                }
+            }
+        }
+
+        let checkpoints: [TimeInterval] = [0, 0.05, 0.10, 0.18, 0.30, 0.50, 0.80]
+        // Official Kick75 NuPhyIO exposes only 0...3. Mode 4 belongs to the
+        // Air75 V3 lighting profile and can leave Kick75 in a firmware state
+        // that ignores later D6 mode changes, so the probe must never send it.
+        for mode in 0...3 {
+            var desired = original0
+            desired[9] = UInt8(mode)
+            let acknowledgement = try probe.transact(
+                command: 0xD6,
+                length: 17,
+                address: 0,
+                handle: 0,
+                payload: desired
+            )
+            let echoed = try ProtocolProbe.payload(from: acknowledgement, expectedLength: 17)
+            guard echoed == desired else {
+                throw ProbeError.verificationFailed("mode \(mode) ACK mismatch")
+            }
+            print("\nmode \(mode) ACK exact")
+            var previous: TimeInterval = 0
+            for checkpoint in checkpoints {
+                if checkpoint > previous {
+                    Thread.sleep(forTimeInterval: checkpoint - previous)
+                }
+                let readback = try kick75ReadState(probe, handle: 0)
+                let differences = desired.indices.filter { desired[$0] != readback[$0] }
+                print(String(
+                    format: "%4dms mode=%02X diffs=%@ raw=%@",
+                    Int(checkpoint * 1_000),
+                    readback[9],
+                    differences.map(String.init).joined(separator: ","),
+                    hexBytes(readback)
+                ))
+                previous = checkpoint
+            }
+            try kick75RestoreStates(probe, originals: [0: original0], handles: [0])
+            print("mode \(mode) restore exact")
+            Thread.sleep(forTimeInterval: 0.35)
+        }
+
+        let final0 = try kick75ReadState(probe, handle: 0)
+        let final1 = try kick75ReadState(probe, handle: 1)
+        guard final0 == original0, final1 == original1 else {
+            throw ProbeError.verificationFailed("final dual-handle state mismatch")
+        }
+        needsEmergencyRestore = false
+        print("\nKick75 official sidelight modes 0...3 PASS; exact restore verified")
+        exit(0)
+    }
+
+    if kick75D6Validate {
+        guard targetProductID == Kick75KeymapController.productID else {
+            throw ProbeError.verificationFailed(
+                "--kick75-d6-validate requires --product-id 0x1026"
+            )
+        }
+        let probe = ProtocolProbe(targetProductID: targetProductID)
+        var originals: [Int: [UInt8]] = [:]
+        for profileHandle in 0...1 {
+            originals[profileHandle] = try kick75ReadState(probe, handle: profileHandle)
+        }
+        let parsedStates = try (0...1).map { profileHandle -> Air75LightingState in
+            guard let raw = originals[profileHandle] else {
+                throw ProbeError.verificationFailed("missing Kick75 handle \(profileHandle)")
+            }
+            return try Air75LightingState(handle: profileHandle, raw: raw)
+        }
+        let backupURL = try ConfigurationStore().createLightingBackup(
+            states: parsedStates,
+            note: "Kick75 D6 字段逐项实机验证前读取的两组完整 17-byte 原始状态。",
+            profileID: "nuphy.kick75",
+            deviceFingerprint: nil
+        )
+        print("backup: \(backupURL.path)")
+        for profileHandle in 0...1 {
+            print("original h\(profileHandle): \(hexBytes(originals[profileHandle] ?? []))")
+        }
+
+        var needsEmergencyRestore = true
+        defer {
+            if needsEmergencyRestore {
+                do {
+                    try kick75RestoreStates(probe, originals: originals, handles: [0])
+                    fputs("EMERGENCY RESTORE: verified\n", stderr)
+                } catch {
+                    fputs("EMERGENCY RESTORE FAILED: \(error.localizedDescription)\n", stderr)
+                }
+            }
+        }
+
+        func runTest(_ name: String,
+                     toleratedDeltas: [Int: Int] = [:],
+                     mutate: (inout [UInt8]) -> Void) throws {
+            print("\n== \(name) ==")
+            do {
+                for profileHandle in [0] {
+                    guard var desired = originals[profileHandle] else {
+                        throw ProbeError.verificationFailed("missing Kick75 original state")
+                    }
+                    mutate(&desired)
+                    let verified = try kick75WriteState(
+                        probe,
+                        handle: profileHandle,
+                        desired: desired,
+                        toleratedDeltas: toleratedDeltas
+                    )
+                    print("h\(profileHandle) verified: \(hexBytes(verified))")
+                }
+                Thread.sleep(forTimeInterval: 0.8)
+                try kick75RestoreStates(probe, originals: originals, handles: [0])
+                print("\(name) restore: exact readback verified")
+            } catch {
+                try? kick75RestoreStates(probe, originals: originals, handles: [0])
+                throw error
+            }
+        }
+
+        print("\n== D6 no-op round trip ==")
+        for profileHandle in [0] {
+            guard let original = originals[profileHandle] else { continue }
+            _ = try kick75WriteState(probe, handle: profileHandle, desired: original)
+            print("h\(profileHandle) no-op ACK + exact D5 readback verified")
+        }
+        try kick75RestoreStates(probe, originals: originals, handles: [0])
+
+        try runTest("backlight mode byte 0") { raw in
+            raw[0] = UInt8(Air75BacklightMode.staticColor.rawValue)
+        }
+        try runTest(
+            "backlight static color bytes 0,4...8",
+            toleratedDeltas: [6: 1, 7: 1, 8: 1]
+        ) { raw in
+            raw[0] = UInt8(Air75BacklightMode.staticColor.rawValue)
+            raw[4] = 0
+            raw[5] = 0
+            raw[6] = 0x16
+            raw[7] = 0x8B
+            raw[8] = 0xFF
+        }
+        let backlightColors = try kick75ReadAllColors(probe, ledCount: 85)
+        print("D2 after backlight restore: \(backlightColors.count) RGB bytes readable")
+
+        try runTest("sidelight mode byte 9") { raw in
+            raw[9] = UInt8(Air75SidelightMode.staticColor.rawValue)
+        }
+        try runTest(
+            "sidelight static color bytes 9,12...16",
+            toleratedDeltas: [14: 1, 15: 1, 16: 1]
+        ) { raw in
+            raw[9] = UInt8(Air75SidelightMode.staticColor.rawValue)
+            raw[12] = 0
+            raw[13] = 0
+            raw[14] = 0xFF
+            raw[15] = 0x9F
+            raw[16] = 0x0A
+        }
+
+        try kick75RestoreStates(probe, originals: originals, handles: [0])
+        for profileHandle in 0...1 {
+            guard let original = originals[profileHandle] else { continue }
+            let final = try kick75ReadState(probe, handle: profileHandle)
+            guard final == original else {
+                throw ProbeError.verificationFailed(
+                    "Kick75 final state changed unexpectedly on handle \(profileHandle)"
+                )
+            }
+        }
+        needsEmergencyRestore = false
+        print("\nKick75 D6 validation PASS: backlight, sidelight, colors, and exact restore")
+        exit(0)
+    }
+
+    if kick75D6Observe {
+        guard targetProductID == Kick75KeymapController.productID else {
+            throw ProbeError.verificationFailed(
+                "--kick75-d6-observe requires --product-id 0x1026"
+            )
+        }
+        let probe = ProtocolProbe(targetProductID: targetProductID)
+        var samples: [[Int: [UInt8]]] = []
+        for iteration in 0..<8 {
+            var sample: [Int: [UInt8]] = [:]
+            for profileHandle in 0...1 {
+                let response = try probe.transact(
+                    command: 0xD5,
+                    length: 17,
+                    address: 0,
+                    handle: UInt8(profileHandle)
+                )
+                sample[profileHandle] = try ProtocolProbe.payload(
+                    from: response,
+                    expectedLength: 17
+                )
+            }
+            samples.append(sample)
+            let rendered = (0...1).compactMap { profileHandle -> String? in
+                guard let bytes = sample[profileHandle] else { return nil }
+                return "h\(profileHandle)=" + bytes.map {
+                    String(format: "%02X", $0)
+                }.joined(separator: " ")
+            }.joined(separator: " | ")
+            print("sample \(iteration + 1): \(rendered)")
+            if iteration < 7 { Thread.sleep(forTimeInterval: 0.5) }
+        }
+        for profileHandle in 0...1 {
+            guard let baseline = samples.first?[profileHandle] else { continue }
+            let changing = baseline.indices.filter { byteIndex in
+                samples.contains { $0[profileHandle]?[byteIndex] != baseline[byteIndex] }
+            }
+            print(
+                "handle \(profileHandle) changing byte offsets: "
+                    + (changing.isEmpty ? "none" : changing.map(String.init).joined(separator: ", "))
+            )
+        }
+        print("read-only observation complete; no D6 frame was sent")
+        exit(0)
+    }
+
+    if s4KeymapRead {
+        guard let productID = targetProductID else {
+            print("--s4-keymap-read requires --product-id 0xNNNN")
+            exit(2)
+        }
+        let snapshot = try NuPhyS4ReadOnlyKeymapInspector(productID: productID).readSnapshot()
+        let geometry = snapshot.geometry
+        print("S4 keymap: product=0x\(String(format: "%04X", productID)) "
+              + "layers=\(geometry.layerCount) matrix=\(geometry.rows)x\(geometry.columns) "
+              + "extra=\(geometry.extraKeyCount) bytes=\(snapshot.bytes.count)")
+        for layer in 0..<geometry.layerCount {
+            let top = (1...12).compactMap { snapshot.keycode(layer: layer, entry: $0) }
+                .map { String(format: "%04X", $0) }.joined(separator: " ")
+            let knobEntries = [74, 90, 91].compactMap { entry -> String? in
+                guard entry < geometry.entriesPerLayer,
+                      let value = snapshot.keycode(layer: layer, entry: entry) else { return nil }
+                return "\(entry):\(String(format: "%04X", value))"
+            }.joined(separator: " ")
+            print("L\(layer) top=[\(top)] knob=[\(knobEntries)]")
+        }
+        exit(0)
+    }
     if CommandLine.arguments.contains("--wireless-enumerate") {
         // 只读枚举：列出所有 NuPhy (VID 0x19F5) HID 接口及其 transport，
         // 用于蓝牙/2.4G 验收。不发送任何报文。
