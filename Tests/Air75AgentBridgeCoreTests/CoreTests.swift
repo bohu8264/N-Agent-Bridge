@@ -155,13 +155,44 @@ final class CoreTests: XCTestCase {
         }
         try store.save(legacy)
         let migrated = store.load()
-        XCTAssertEqual(migrated.schemaVersion, 12)
+        XCTAssertEqual(migrated.schemaVersion, 13)
         XCTAssertEqual(migrated.keyBindings.map(\.usage), Array(0x3A...0x45))
         XCTAssertEqual(migrated.agentLightingEnabled, true)
         XCTAssertFalse(migrated.overlayEnabled)
         XCTAssertEqual(migrated.resolvedTaskLightPalette, .default)
         XCTAssertEqual(migrated.sidelightRestoredAfterSignalLights, false)
         XCTAssertEqual(migrated.resolvedAgentSourceMode, .recent)
+    }
+
+    func testSchema13RepairsExactAir75MixedFirstRunBindingsOnly() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ConfigurationStore(baseURL: root)
+        var corrupted = BridgeConfiguration()
+        corrupted.schemaVersion = 12
+        corrupted.setHardwareProfileState(
+            InstalledHardwareProfileState(installed: true),
+            for: "nuphy.air75-v3"
+        )
+        var corruptedBindings = BridgeConfiguration.hardwareProfileBindings
+        corruptedBindings[1].usage = 0x6A // F15 instead of F14
+        corruptedBindings[2].usage = 0x2B // Tab instead of F15
+        corrupted.setBindings(corruptedBindings, for: "nuphy.air75-v3")
+        try store.save(corrupted)
+
+        let repaired = store.load()
+        XCTAssertEqual(repaired.schemaVersion, 13)
+        XCTAssertEqual(repaired.bindings(for: "nuphy.air75-v3").map(\.usage), Array(0x68...0x73))
+
+        var custom = BridgeConfiguration.hardwareProfileBindings
+        custom[2].usage = 0x14 // A genuine learned Q binding must survive.
+        XCTAssertEqual(
+            BridgeConfiguration.repairingKnownCorruptedDefaultLayout(
+                custom,
+                hardwareProfileInstalled: true
+            ),
+            custom
+        )
     }
 
     func testProfileRegistrySelectsExactModelAndGatesHardwareDrivers() {

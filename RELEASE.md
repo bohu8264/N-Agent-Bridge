@@ -1,5 +1,13 @@
 # Release
 
+## 0.13.2 Development Build
+
+- 版本：`0.13.2 (50)`。
+- 自动迁移朋友电脑上出现的 `F13 / F15 / Tab / F16…F24` 异常默认序列为连续 F13–F24；整组精确匹配，不覆盖真正的用户自定义键。
+- 首次配置与灯光读取改为串行事务，避免键位写入、Codex 中继安装和指示灯模式互相抢占同一 HID 通道；配置完成前界面显示“正在配置”。
+- Debug App、software-only SelfTest、Universal（arm64 + x86_64）App、固定签名、Bundle 资源与 DMG CRC/结构验证：通过。
+- Development DMG SHA-256：`83b95375a3dbc8cc6643dff976178a9315194353b39d49cca23b9d9957faeb28`。
+
 ## 0.13.1 Development Build
 
 - 版本：`0.13.1 (49)`。

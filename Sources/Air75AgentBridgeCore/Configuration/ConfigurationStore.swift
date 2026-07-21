@@ -151,6 +151,28 @@ public final class ConfigurationStore: @unchecked Sendable {
             value.schemaVersion = 12
             requiresSchemaSave = true
         }
+        if value.schemaVersion < 13 {
+            // A 0.13.1 first-run configuration could persist the exact mixed
+            // F1/F15/Tab/F4-F12 sequence. Repair both the legacy mirror and
+            // every per-model copy according to that keyboard's installed
+            // board-profile state. The full-signature check deliberately
+            // leaves all other custom mappings intact.
+            value.keyBindings = BridgeConfiguration.repairingKnownCorruptedDefaultLayout(
+                value.keyBindings,
+                hardwareProfileInstalled: value.hardwareProfileInstalled == true
+            )
+            if var modelBindings = value.modelKeyBindings {
+                for (profileID, bindings) in modelBindings {
+                    modelBindings[profileID] = BridgeConfiguration.repairingKnownCorruptedDefaultLayout(
+                        bindings,
+                        hardwareProfileInstalled: value.hasInstalledHardwareProfile(for: profileID)
+                    )
+                }
+                value.modelKeyBindings = modelBindings
+            }
+            value.schemaVersion = 13
+            requiresSchemaSave = true
+        }
         // A short-lived multi-model build derived Kick75 from the installed
         // Air profile and persisted only Agent 1 as F14 while the remaining
         // actions stayed F2-F12. That mixed sequence can never represent the

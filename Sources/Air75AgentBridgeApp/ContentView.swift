@@ -344,9 +344,9 @@ struct OverviewView: View {
                         ReadinessRow(
                             icon: "command",
                             title: "Codex 控制",
-                            value: controlsReady ? "已配置" : "需要配置",
+                            value: store.hardwareProfileBusy ? "正在配置" : (controlsReady ? "已配置" : "需要配置"),
                             ready: controlsReady,
-                            actionTitle: controlsReady ? nil : "修复",
+                            actionTitle: store.hardwareProfileBusy || controlsReady ? nil : "修复",
                             action: { store.installCodexDesktopBindings() }
                         )
                         Divider().padding(.leading, 44)

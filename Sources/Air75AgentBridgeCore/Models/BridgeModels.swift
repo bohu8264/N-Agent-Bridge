@@ -384,7 +384,7 @@ public struct InstalledHardwareProfileState: Codable, Equatable, Sendable {
 }
 
 public struct BridgeConfiguration: Codable, Sendable {
-    public var schemaVersion = 12
+    public var schemaVersion = 13
     public var hasCompletedOnboarding = false
     public var enabled = false
     public var codexModeEnabled = false
@@ -507,6 +507,28 @@ public struct BridgeConfiguration: Codable, Sendable {
                               action: binding.action,
                               signalLightIndex: binding.signalLightIndex)
         }
+    }
+
+    /// Repairs the exact 0.13.1 first-run corruption observed on another Mac:
+    /// Agent 2 was persisted as F15 and Agent 3 as Tab while every remaining
+    /// action kept its default position. Treating those two valid HID usages
+    /// as intentional customization made the normal F1-F12 -> F13-F24
+    /// conversion preserve the broken pair forever. Match the whole action
+    /// and usage sequence so genuine user customizations remain untouched.
+    public static func repairingKnownCorruptedDefaultLayout(
+        _ bindings: [KeyBinding],
+        hardwareProfileInstalled: Bool
+    ) -> [KeyBinding] {
+        guard bindings.count == defaultBindings.count,
+              bindings.map(\.usagePage) == Array(repeating: 0x07, count: defaultBindings.count),
+              bindings.map(\.action) == defaultBindings.map(\.action) else {
+            return bindings
+        }
+        let usages = bindings.map(\.usage)
+        let corruptedOriginal = [0x3A, 0x6A, 0x2B] + Array(0x3D...0x45)
+        let corruptedInstalled = [0x68, 0x6A, 0x2B] + Array(0x6B...0x73)
+        guard usages == corruptedOriginal || usages == corruptedInstalled else { return bindings }
+        return hardwareProfileInstalled ? hardwareProfileBindings : defaultBindings
     }
 
     public func hardwareProfileState(for profileID: String?) -> InstalledHardwareProfileState? {

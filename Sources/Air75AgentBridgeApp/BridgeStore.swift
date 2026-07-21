@@ -149,8 +149,13 @@ final class BridgeStore: ObservableObject {
                 }
                 if detectedConnection != nil,
                    (connectionChanged || self.lightingStates.isEmpty || !self.lightingAvailable),
-                   !self.lightingBusy {
+                   !self.lightingBusy,
+                   !self.hardwareProfileBusy,
+                   !self.currentHardwareProfileNeedsInstallation {
                     self.refreshLighting()
+                } else if detectedConnection != nil,
+                          self.currentHardwareProfileNeedsInstallation {
+                    self.lightingMessage = "首次配置会自动设置指示灯模式"
                 } else if detectedConnection == nil, connectionChanged {
                     self.lightingMessage = devices.contains(where: {
                         $0.isRecognized && $0.transports.contains(.bluetooth)
@@ -363,6 +368,28 @@ final class BridgeStore: ObservableObject {
 
     func oneClickEnable() {
         guard !hardwareProfileBusy else { return }
+        // D5/D6 and the keymap controller share the same vendor HID channel.
+        // If a connection refresh was already in flight, wait for it instead
+        // of allowing first-run keymap and indicator writes to race it.
+        if lightingBusy {
+            hardwareProfileBusy = true
+            hardwareProfileMessage = "正在等待灯光通道完成检测…"
+            lastMessage = hardwareProfileMessage
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                for _ in 0..<80 where self.lightingBusy {
+                    try? await Task.sleep(for: .milliseconds(75))
+                }
+                self.hardwareProfileBusy = false
+                guard !self.lightingBusy else {
+                    self.hardwareProfileMessage = "灯光通道仍在忙，请稍后重试"
+                    self.lastMessage = self.hardwareProfileMessage
+                    return
+                }
+                self.oneClickEnable()
+            }
+            return
+        }
         guard let device = currentDevice else {
             lastMessage = "请先连接受支持的 NuPhy 键盘"
             return
@@ -423,6 +450,7 @@ final class BridgeStore: ObservableObject {
             && lightingDriver?.supportsFullLightingControl == true
             && lightingDriver?.supportedBacklightModes.contains(.signalIndicator) == true
         Task {
+            var shouldRefreshLightingAfterSetup = false
             do {
                 let keybindingInstaller = codexKeybindingInstaller
                 let result = try await Task.detached(priority: .userInitiated) { () -> (KeyboardKeymapInstallResult, URL, URL, CodexKeybindingInstallResult, [KeyboardLightingState]?, String?) in
@@ -482,8 +510,12 @@ final class BridgeStore: ObservableObject {
                 configuration.enabled = true
                 configuration.codexModeEnabled = true
                 configuration.mappingPausedByUser = false
+                let normalizedBindings = BridgeConfiguration.repairingKnownCorruptedDefaultLayout(
+                    configuration.bindings(for: targetProfileID),
+                    hardwareProfileInstalled: false
+                )
                 let installedBindings = BridgeConfiguration.bindingsForInstalledHardwareProfile(
-                    configuration.bindings(for: targetProfileID)
+                    normalizedBindings
                 )
                 configuration.setHardwareProfileState(
                     InstalledHardwareProfileState(
@@ -499,6 +531,8 @@ final class BridgeStore: ObservableObject {
                     lightingStates = indicatorStates
                     lightingConnection = lightingDriver?.detectedConnection()
                     lightingAvailable = true
+                } else {
+                    shouldRefreshLightingAfterSetup = lightingDriver?.detectedConnection() != nil
                 }
                 persistConfiguration()
                 codexDesktopKeybindingsInstalled = true
@@ -528,6 +562,7 @@ final class BridgeStore: ObservableObject {
                 showOverlay("启用失败", detail: error.localizedDescription)
             }
             hardwareProfileBusy = false
+            if shouldRefreshLightingAfterSetup, !lightingBusy { refreshLighting() }
         }
     }
 

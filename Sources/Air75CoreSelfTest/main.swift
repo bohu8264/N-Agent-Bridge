@@ -554,7 +554,7 @@ do {
     }
     try store.save(legacy)
     let migrated = store.load()
-    check(migrated.schemaVersion == 12
+    check(migrated.schemaVersion == 13
             && migrated.sidelightRestoredAfterSignalLights == false
             && migrated.resolvedAgentSourceMode == .recent
             && migrated.keyBindings.map(\.usage) == Array(0x3A...0x45),
@@ -566,7 +566,7 @@ do {
     corrupted.keyBindings[0].usage = KeyBinding.hidArrayUsageSentinel
     try store.save(corrupted)
     let repaired = store.load()
-    check(repaired.schemaVersion == 12
+    check(repaired.schemaVersion == 13
             && repaired.sidelightRestoredAfterSignalLights == false
             && repaired.keyBindings[0].usage == 0x68
             && repaired.keyBindings.dropFirst().map(\.usage) == Array(0x69...0x73),
@@ -578,6 +578,28 @@ do {
     let repairedKick = store.load()
     check(repairedKick.bindings(for: "nuphy.kick75").map(\.usage) == Array(0x3A...0x45),
           "repairs legacy mixed Kick75 F14/F2-F12 mapping")
+    var mixedAir = BridgeConfiguration()
+    mixedAir.schemaVersion = 12
+    mixedAir.setHardwareProfileState(
+        InstalledHardwareProfileState(installed: true),
+        for: "nuphy.air75-v3"
+    )
+    var mixedAirBindings = BridgeConfiguration.hardwareProfileBindings
+    mixedAirBindings[1].usage = 0x6A
+    mixedAirBindings[2].usage = 0x2B
+    mixedAir.setBindings(mixedAirBindings, for: "nuphy.air75-v3")
+    try store.save(mixedAir)
+    let repairedAir = store.load()
+    check(repairedAir.schemaVersion == 13
+            && repairedAir.bindings(for: "nuphy.air75-v3").map(\.usage) == Array(0x68...0x73),
+          "repairs exact Air75 F13/F15/Tab/F16-F24 first-run corruption")
+    var genuineCustomAir = BridgeConfiguration.hardwareProfileBindings
+    genuineCustomAir[2].usage = 0x14
+    check(BridgeConfiguration.repairingKnownCorruptedDefaultLayout(
+        genuineCustomAir,
+        hardwareProfileInstalled: true
+    ) == genuineCustomAir,
+          "preserves genuine custom bindings while repairing known first-run corruption")
     check(DeviceProfileRegistry.loadBundled().profile(id: "nuphy.air75-v3") != nil,
           "loads bundled model profile registry")
     let bundledProfiles = DeviceProfileRegistry.loadBundled()
