@@ -370,8 +370,21 @@ public struct LightingCapabilities: Codable, Sendable {
     public init() {}
 }
 
+public struct InstalledHardwareProfileState: Codable, Equatable, Sendable {
+    public var installed: Bool
+    public var backupName: String?
+    public var boundFingerprint: DeviceFingerprint?
+
+    public init(installed: Bool = false, backupName: String? = nil,
+                boundFingerprint: DeviceFingerprint? = nil) {
+        self.installed = installed
+        self.backupName = backupName
+        self.boundFingerprint = boundFingerprint
+    }
+}
+
 public struct BridgeConfiguration: Codable, Sendable {
-    public var schemaVersion = 9
+    public var schemaVersion = 11
     public var hasCompletedOnboarding = false
     public var enabled = false
     public var codexModeEnabled = false
@@ -385,8 +398,17 @@ public struct BridgeConfiguration: Codable, Sendable {
     public var hardwareProfileID: String?
     public var hardwareProfileBackupName: String?
     public var boundFingerprint: DeviceFingerprint?
+    /// Hardware profiles live on each physical keyboard independently. Keep
+    /// one recovery record per model so configuring a Kick75 never discards
+    /// the verified Air75 V3 backup (and vice versa). The scalar fields above
+    /// remain decode-only compatibility for schema 1-10.
+    public var hardwareProfileStates: [String: InstalledHardwareProfileState]?
     public var confirmedBluetoothFingerprint: DeviceFingerprint?
     public var keyBindings: [KeyBinding] = Self.defaultBindings
+    /// Optional per-model overrides. `keyBindings` remains the canonical
+    /// legacy set so an existing, verified Air75 V3 hardware profile keeps its
+    /// exact mapping while another keyboard can use different physical keys.
+    public var modelKeyBindings: [String: [KeyBinding]]?
     public var knobMode: KnobMode = .contextAware
     public var reasoningLevel: ReasoningLevel = .medium
     public var fastMode = false
@@ -471,6 +493,90 @@ public struct BridgeConfiguration: Codable, Sendable {
                               action: binding.action,
                               signalLightIndex: binding.signalLightIndex)
         }
+    }
+
+    public func hardwareProfileState(for profileID: String?) -> InstalledHardwareProfileState? {
+        guard let profileID else { return nil }
+        if let state = hardwareProfileStates?[profileID] { return state }
+        guard hardwareProfileInstalled == true, hardwareProfileID == profileID else { return nil }
+        return InstalledHardwareProfileState(
+            installed: true,
+            backupName: hardwareProfileBackupName,
+            boundFingerprint: boundFingerprint
+        )
+    }
+
+    public func hasInstalledHardwareProfile(for profileID: String?) -> Bool {
+        hardwareProfileState(for: profileID)?.installed == true
+    }
+
+    public var hasAnyInstalledHardwareProfile: Bool {
+        if hardwareProfileStates?.values.contains(where: { $0.installed }) == true { return true }
+        return hardwareProfileInstalled == true
+    }
+
+    public mutating func setHardwareProfileState(
+        _ state: InstalledHardwareProfileState?,
+        for profileID: String
+    ) {
+        var states = hardwareProfileStates ?? [:]
+        if let state, state.installed {
+            states[profileID] = state
+        } else {
+            states.removeValue(forKey: profileID)
+        }
+        hardwareProfileStates = states
+
+        // Keep the legacy fields as a harmless mirror for old diagnostic
+        // tools, but never use them to decide another model's restore path.
+        if let state, state.installed {
+            hardwareProfileInstalled = true
+            hardwareProfileID = profileID
+            hardwareProfileBackupName = state.backupName
+            boundFingerprint = state.boundFingerprint
+        } else if hardwareProfileID == profileID {
+            if let replacement = states.first(where: { $0.value.installed }) {
+                hardwareProfileInstalled = true
+                hardwareProfileID = replacement.key
+                hardwareProfileBackupName = replacement.value.backupName
+                boundFingerprint = replacement.value.boundFingerprint
+            } else {
+                hardwareProfileInstalled = false
+                hardwareProfileID = nil
+                hardwareProfileBackupName = nil
+                boundFingerprint = nil
+            }
+        }
+    }
+
+    /// Resolves usages for the keyboard that is actually connected. A
+    /// detached Air75 V3 can still own an F13-F24 hardware layer; a Kick75 in
+    /// software mode must nevertheless use ordinary F1-F12 events.
+    public func bindings(for profileID: String?) -> [KeyBinding] {
+        let profileInstalled = hasInstalledHardwareProfile(for: profileID)
+        if let profileID, let stored = modelKeyBindings?[profileID], !stored.isEmpty {
+            return Self.repairingUnsupportedBindings(
+                stored,
+                hardwareProfileInstalled: profileInstalled
+            )
+        }
+        if profileInstalled {
+            if hardwareProfileID == profileID { return keyBindings }
+            return Self.bindingsForInstalledHardwareProfile(keyBindings)
+        }
+        guard hasAnyInstalledHardwareProfile else { return keyBindings }
+        return Self.bindingsForOriginalHardwareProfile(keyBindings)
+    }
+
+    public mutating func setBindings(_ bindings: [KeyBinding], for profileID: String?) {
+        guard let profileID else {
+            keyBindings = bindings
+            return
+        }
+        var stored = modelKeyBindings ?? [:]
+        stored[profileID] = bindings
+        modelKeyBindings = stored
+        if hardwareProfileID == profileID { keyBindings = bindings }
     }
 
     /// Repairs corrupted/unsupported sources one action at a time without

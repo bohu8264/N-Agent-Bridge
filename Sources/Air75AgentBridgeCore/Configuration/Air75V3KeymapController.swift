@@ -44,6 +44,87 @@ public struct Air75KeymapInstallResult: Sendable {
     public var changedChunkAddresses: [Int]
 }
 
+public struct NuPhyS4KeymapGeometry: Codable, Equatable, Sendable {
+    public var currentMode: Int
+    public var layerCount: Int
+    public var layersPerMode: Int
+    public var rows: Int
+    public var columns: Int
+    public var extraKeyCount: Int
+
+    public var entriesPerLayer: Int { rows * columns + extraKeyCount }
+    public var bytesPerLayer: Int { entriesPerLayer * 2 }
+    public var totalByteCount: Int { bytesPerLayer * layerCount }
+}
+
+public struct NuPhyS4ReadOnlyKeymapSnapshot: Sendable {
+    public var geometry: NuPhyS4KeymapGeometry
+    public var bytes: [UInt8]
+
+    public func keycode(layer: Int, entry: Int) -> UInt16? {
+        guard (0..<geometry.layerCount).contains(layer),
+              (0..<geometry.entriesPerLayer).contains(entry) else { return nil }
+        let offset = layer * geometry.bytesPerLayer + entry * 2
+        guard bytes.indices.contains(offset + 1) else { return nil }
+        return (UInt16(bytes[offset]) << 8) | UInt16(bytes[offset + 1])
+    }
+}
+
+/// S4 geometry and keymap discovery shared by future NuPhy profiles. This
+/// inspector sends only GetBase (0xA0) and GetUseKeys (0xB2); it exposes no
+/// write method and therefore cannot alter firmware state.
+public final class NuPhyS4ReadOnlyKeymapInspector: @unchecked Sendable {
+    private let productID: Int
+
+    public init(productID: Int) { self.productID = productID }
+
+    public func readSnapshot() throws -> NuPhyS4ReadOnlyKeymapSnapshot {
+        let base = try KeymapProtocolSession(
+            expectedCommand: 0xA0,
+            productIDs: [productID]
+        ).transact(command: 0xA0, length: 8, address: 0, handle: 0, payload: [])
+        guard base.count >= 16, base[4] >= 8 else { throw Air75KeymapError.invalidResponse }
+        let payload = Array(base[8..<16])
+        let extra = payload[5] & 0x80 != 0 ? Int(payload[5] & 0x7F) : 2
+        let geometry = NuPhyS4KeymapGeometry(
+            currentMode: Int(payload[0]),
+            layerCount: Int(payload[1]),
+            layersPerMode: Int(payload[2]),
+            rows: Int(payload[3]),
+            columns: Int(payload[4]),
+            extraKeyCount: extra
+        )
+        guard (1...16).contains(geometry.layerCount),
+              (1...8).contains(geometry.layersPerMode),
+              (1...16).contains(geometry.rows),
+              (1...24).contains(geometry.columns),
+              (0...16).contains(geometry.extraKeyCount),
+              geometry.totalByteCount > 0,
+              geometry.totalByteCount <= Int(UInt16.max) else {
+            throw Air75KeymapError.invalidLength
+        }
+
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(geometry.totalByteCount)
+        for address in stride(from: 0, to: geometry.totalByteCount, by: 56) {
+            let length = min(56, geometry.totalByteCount - address)
+            let response = try KeymapProtocolSession(
+                expectedCommand: Air75V3KeymapController.getUseKeyMatrix,
+                productIDs: [productID]
+            ).transact(
+                command: Air75V3KeymapController.getUseKeyMatrix,
+                length: UInt8(length),
+                address: UInt16(address),
+                handle: 0,
+                payload: []
+            )
+            bytes.append(contentsOf: response[8..<(8 + length)])
+        }
+        guard bytes.count == geometry.totalByteCount else { throw Air75KeymapError.invalidLength }
+        return NuPhyS4ReadOnlyKeymapSnapshot(geometry: geometry, bytes: bytes)
+    }
+}
+
 /// Safe, narrowly-scoped Air75 V3 ANSI keymap writer based on the protocol used
 /// by the official NuPhyIO configurator. It backs up the full 1568-byte map,
 /// changes only verified matrix positions, then reads the entire map back.
@@ -204,31 +285,233 @@ public final class Air75V3KeymapController: @unchecked Sendable {
     }
 }
 
+/// Verified Kick75 ANSI/IO keymap writer. Kick75 has a 6x15 matrix plus two
+/// encoder entries (92 entries per layer), so none of the Air75 V3 offsets are
+/// reused. The original values below come from the attached 0x19F5:0x1026
+/// keyboard's complete S4 readback after its current NuPhy firmware update.
+public final class Kick75KeymapController: @unchecked Sendable {
+    public static let vendorID = 0x19F5
+    public static let productID = 0x1026
+    public static let keymapByteCount = 1_472
+
+    private static let getUseKeyMatrix: UInt8 = 0xB2
+    private static let setUseKeyMatrix: UInt8 = 0xB3
+    private static let chunkSize = 56
+    private static let entriesPerLayer = 92
+    private static let layerCount = 8
+    private static let baseLayers = [0, 4]
+    private static let bridgeFunctionRow = (1...12).map { UInt16(0x67 + $0) }
+    private static let macOriginalFunctionRow: [UInt16] = [
+        0x0069, 0x006A, 0x7E06, 0x7E07, 0x7E08, 0x7E16,
+        0x00AC, 0x00AE, 0x00AB, 0x00A8, 0x00AA, 0x00A9,
+    ]
+    private static let windowsOriginalFunctionRow = (0x003A...0x0045).map(UInt16.init)
+    private static let originalKnob: [(entry: Int, value: UInt16)] = [
+        (74, 0x00A8), // press: mute
+        (90, 0x00A9), // clockwise: volume up
+        (91, 0x00AA), // counter-clockwise: volume down
+    ]
+    private static let bridgeKnob: [(entry: Int, value: UInt16)] = [
+        (74, 0x0048), // press: Pause
+        (90, 0x0046), // clockwise: Print Screen
+        (91, 0x0047), // counter-clockwise: Scroll Lock
+    ]
+
+    public init() {}
+
+    public static func hasBridgeProfile(_ bytes: [UInt8]) -> Bool {
+        guard bytes.count == keymapByteCount else { return false }
+        for layer in baseLayers where row(in: bytes, layer: layer) != bridgeFunctionRow {
+            return false
+        }
+        for layer in 0..<layerCount where knob(in: bytes, layer: layer) != bridgeKnob.map(\.value) {
+            return false
+        }
+        return true
+    }
+
+    public static func isPlausibleKeymap(_ bytes: [UInt8]) -> Bool {
+        (try? Kick75KeymapController().makeBridgeProfile(from: bytes)) != nil
+    }
+
+    public func readKeymap() throws -> [UInt8] {
+        var result: [UInt8] = []
+        result.reserveCapacity(Self.keymapByteCount)
+        for address in stride(from: 0, to: Self.keymapByteCount, by: Self.chunkSize) {
+            let length = min(Self.chunkSize, Self.keymapByteCount - address)
+            let response = try KeymapProtocolSession(
+                expectedCommand: Self.getUseKeyMatrix,
+                productIDs: [Self.productID]
+            ).transact(
+                command: Self.getUseKeyMatrix,
+                length: UInt8(length),
+                address: UInt16(address),
+                handle: 0,
+                payload: []
+            )
+            result.append(contentsOf: response[8..<(8 + length)])
+        }
+        guard result.count == Self.keymapByteCount else { throw Air75KeymapError.invalidLength }
+        return result
+    }
+
+    public func makeBridgeProfile(from original: [UInt8]) throws -> [UInt8] {
+        guard original.count == Self.keymapByteCount else { throw Air75KeymapError.invalidLength }
+
+        let macRow = Self.row(in: original, layer: 0)
+        guard macRow == Self.macOriginalFunctionRow || macRow == Self.bridgeFunctionRow else {
+            let mismatch = macRow.enumerated().first {
+                $0.element != Self.macOriginalFunctionRow[$0.offset]
+            }?.offset ?? 0
+            throw Air75KeymapError.incompatibleLayout(index: 1 + mismatch, value: macRow[mismatch])
+        }
+        let windowsRow = Self.row(in: original, layer: 4)
+        guard windowsRow == Self.windowsOriginalFunctionRow || windowsRow == Self.bridgeFunctionRow else {
+            let mismatch = zip(windowsRow, Self.windowsOriginalFunctionRow).enumerated().first {
+                $0.element.0 != $0.element.1
+            }?.offset ?? 0
+            throw Air75KeymapError.incompatibleLayout(
+                index: 4 * Self.entriesPerLayer + 1 + mismatch,
+                value: windowsRow[mismatch]
+            )
+        }
+        for layer in 0..<Self.layerCount {
+            let current = Self.knob(in: original, layer: layer)
+            guard current == Self.originalKnob.map(\.value) || current == Self.bridgeKnob.map(\.value) else {
+                let mismatch = current.enumerated().first { offset, value in
+                    value != Self.originalKnob[offset].value && value != Self.bridgeKnob[offset].value
+                }?.offset ?? 0
+                let entry = layer * Self.entriesPerLayer + Self.originalKnob[mismatch].entry
+                throw Air75KeymapError.incompatibleLayout(index: entry, value: current[mismatch])
+            }
+        }
+
+        var profile = original
+        for layer in Self.baseLayers {
+            for (offset, value) in Self.bridgeFunctionRow.enumerated() {
+                Self.setKeycode(value, in: &profile,
+                                entry: layer * Self.entriesPerLayer + offset + 1)
+            }
+        }
+        for layer in 0..<Self.layerCount {
+            for item in Self.bridgeKnob {
+                Self.setKeycode(item.value, in: &profile,
+                                entry: layer * Self.entriesPerLayer + item.entry)
+            }
+        }
+        return profile
+    }
+
+    public func installBridgeProfile(expectedOriginal: [UInt8]? = nil) throws -> Air75KeymapInstallResult {
+        let original = try readKeymap()
+        if let expectedOriginal, original != expectedOriginal {
+            throw Air75KeymapError.verificationFailed
+        }
+        let profile = try makeBridgeProfile(from: original)
+        let changed = changedChunks(from: original, to: profile)
+        guard !changed.isEmpty else {
+            return Air75KeymapInstallResult(original: original, installed: profile,
+                                            changedChunkAddresses: [])
+        }
+        do {
+            try write(chunksAt: changed, from: profile)
+            Thread.sleep(forTimeInterval: 0.25)
+            guard try readKeymap() == profile else { throw Air75KeymapError.verificationFailed }
+        } catch {
+            try? write(chunksAt: changed, from: original)
+            Thread.sleep(forTimeInterval: 0.25)
+            guard (try? readKeymap()) == original else { throw Air75KeymapError.restoreFailed }
+            throw error
+        }
+        return Air75KeymapInstallResult(original: original, installed: profile,
+                                        changedChunkAddresses: changed)
+    }
+
+    @discardableResult
+    public func restore(_ bytes: [UInt8]) throws -> [UInt8] {
+        guard Self.isPlausibleKeymap(bytes), !Self.hasBridgeProfile(bytes) else {
+            throw Air75KeymapError.invalidLength
+        }
+        let current = try readKeymap()
+        let changed = changedChunks(from: current, to: bytes)
+        try write(chunksAt: changed, from: bytes)
+        Thread.sleep(forTimeInterval: 0.25)
+        let readback = try readKeymap()
+        guard readback == bytes else { throw Air75KeymapError.restoreFailed }
+        return readback
+    }
+
+    private func changedChunks(from before: [UInt8], to after: [UInt8]) -> [Int] {
+        stride(from: 0, to: Self.keymapByteCount, by: Self.chunkSize).filter { address in
+            let end = min(address + Self.chunkSize, Self.keymapByteCount)
+            return before[address..<end] != after[address..<end]
+        }
+    }
+
+    private func write(chunksAt addresses: [Int], from bytes: [UInt8]) throws {
+        for address in addresses {
+            let end = min(address + Self.chunkSize, Self.keymapByteCount)
+            let payload = Array(bytes[address..<end])
+            _ = try KeymapProtocolSession(
+                expectedCommand: Self.setUseKeyMatrix,
+                productIDs: [Self.productID]
+            ).transact(
+                command: Self.setUseKeyMatrix,
+                length: UInt8(payload.count),
+                address: UInt16(address),
+                handle: 0,
+                payload: payload
+            )
+            Thread.sleep(forTimeInterval: 0.06)
+        }
+    }
+
+    private static func row(in bytes: [UInt8], layer: Int) -> [UInt16] {
+        (1...12).map { keycode(in: bytes, entry: layer * entriesPerLayer + $0) }
+    }
+
+    private static func knob(in bytes: [UInt8], layer: Int) -> [UInt16] {
+        originalKnob.map { keycode(in: bytes, entry: layer * entriesPerLayer + $0.entry) }
+    }
+
+    private static func keycode(in bytes: [UInt8], entry: Int) -> UInt16 {
+        let offset = entry * 2
+        return (UInt16(bytes[offset]) << 8) | UInt16(bytes[offset + 1])
+    }
+
+    private static func setKeycode(_ value: UInt16, in bytes: inout [UInt8], entry: Int) {
+        let offset = entry * 2
+        bytes[offset] = UInt8((value >> 8) & 0xFF)
+        bytes[offset + 1] = UInt8(value & 0xFF)
+    }
+}
+
 private final class KeymapProtocolSession {
     private let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
     private let inputBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 64)
     private let expectedCommand: UInt8
+    private let productIDs: [Int]
     private var response: [UInt8]?
 
-    init(expectedCommand: UInt8) { self.expectedCommand = expectedCommand }
+    init(expectedCommand: UInt8,
+         productIDs: [Int] = [Air75V3KeymapController.productID,
+                              Air75V3KeymapController.dongleProductID]) {
+        self.expectedCommand = expectedCommand
+        self.productIDs = productIDs
+    }
     deinit { inputBuffer.deallocate() }
 
     func transact(command: UInt8, length: UInt8, address: UInt16, handle: UInt8,
                   payload: [UInt8]) throws -> [UInt8] {
-        IOHIDManagerSetDeviceMatchingMultiple(manager, [
+        let matches = productIDs.map { productID in
             [
                 kIOHIDVendorIDKey: Air75V3KeymapController.vendorID,
-                kIOHIDProductIDKey: Air75V3KeymapController.productID,
-                kIOHIDPrimaryUsagePageKey: 1,
-                kIOHIDPrimaryUsageKey: 0,
-            ],
-            [
-                kIOHIDVendorIDKey: Air75V3KeymapController.vendorID,
-                kIOHIDProductIDKey: Air75V3KeymapController.dongleProductID,
+                kIOHIDProductIDKey: productID,
                 kIOHIDPrimaryUsagePageKey: 1,
                 kIOHIDPrimaryUsageKey: 0,
             ]
-        ] as CFArray)
+        }
+        IOHIDManagerSetDeviceMatchingMultiple(manager, matches as CFArray)
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
         let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         guard openResult == kIOReturnSuccess else { throw Air75KeymapError.managerOpen(openResult) }
@@ -238,7 +521,7 @@ private final class KeymapProtocolSession {
         }
         let devices = (IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice>) ?? []
         // 有线接口优先；键盘切到 2.4G 时由接收器接管同一协议。
-        let ordered = devices.sorted { Self.priority(of: $0) < Self.priority(of: $1) }
+        let ordered = devices.sorted { priority(of: $0) < priority(of: $1) }
         guard !ordered.isEmpty else { throw Air75KeymapError.deviceNotFound }
 
         var lastError: Error = Air75KeymapError.deviceNotFound
@@ -299,11 +582,9 @@ private final class KeymapProtocolSession {
         return response
     }
 
-    private static func priority(of device: IOHIDDevice) -> Int {
+    private func priority(of device: IOHIDDevice) -> Int {
         let productID = (IOHIDDeviceGetProperty(device, kIOHIDProductIDKey as CFString) as? Int) ?? -1
-        if productID == Air75V3KeymapController.productID { return 0 }
-        if productID == Air75V3KeymapController.dongleProductID { return 1 }
-        return 2
+        return productIDs.firstIndex(of: productID) ?? productIDs.count
     }
 
     private static func makeReport(command: UInt8, length: UInt8, address: UInt16,

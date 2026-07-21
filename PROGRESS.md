@@ -2,6 +2,65 @@
 
 更新时间：2026-07-21 CST
 
+## 0.12.5 已完成（Kick75 自定义实体键状态灯）
+
+- 定位 Agent 动作改到 Q 后没有灯光的根因：Kick75 的 `signalLightLayoutID` 只登记了 F1–F12，按键学习可以保存 Q usage `0x14`，但无法解析 D8 灯位，因此安全地跳过写入。
+- 从官方 NuPhyIO `Kick75` 设备布局读取完整 ANSI 可见键顺序；源数组的 14、15、16 是旋钮减音量/静音/加音量隐藏项，固件灯位需排除这三项。由此 Q 的源位置 33 对应 D8 index 30。
+- 受保护 Probe 对 Q=30 先持久备份原色，再完成临时颜色 D8 写入、完整 ACK、D2 精确回读和原色恢复。备份：`2026-07-21T06-21-43Z-kick75-q-signal-light.json`。
+- `SignalLightLayout` 已补齐 Kick75 数字、字母、符号、修饰键、空格和方向键等标准 HID Usage；Agent 1–6 改键后由当前 Usage 实时重算灯位，现有已保存的 Q 绑定无需重新学习。software-only SelfTest 覆盖 Q=30、A=45、Space=74、Right=79 并通过。
+- 固定签名 `0.12.5 (47)` 已原位安装并启动；运行诊断确认 `nuphy.kick75 / LightingAvailable=1 / HID open=0 / 输入监控=1 / 辅助功能=1`。Universal（arm64 + x86_64）Development DMG 结构、签名与 CRC 校验通过，SHA-256：`43b019377093debeb0a3798fe1dfa8c2534c3df87c3bae6811b8f4bba63c4e75`。
+
+## 0.12.4 已完成（Kick75 灯光保持时间）
+
+- 定位 Kick75“灯光保持时间”置灰是能力白名单所致：型号 Profile 尚未注册休眠 driver，刷新时不会读取 F3，界面因 `sleepConfiguration == nil` 正确保持禁用。
+- Kick75 `19F5:1026` 实机 F3 返回 `01 06 18`。受保护 Probe 先持久备份完整三字节，再完成 F5 原值写入、临时“始终亮着”`00 06 18`、逐次 ACK 与 F3 精确回读，最终恢复 `01 06 18`；第三字节 `0x18` 全程不改。
+- Profile 新增型号专属 `nuphy.s4.kick75-sleep`，driver 仍只匹配 Kick75 PID，不会把 Air75 或未知型号的管理写入扩大到其他键盘；UI 连接 USB-C 后读取真实值并开放 3/6/10/20/30/60 分钟及始终亮着。
+- Protocol Probe 新增仅允许 PID `0x1026` 的 `--kick75-sleep-validate` 保护验证；software-only SelfTest 新增 Profile/driver 白名单回归并全部通过。实机备份：`2026-07-21T06-07-53Z-hardware-sleep.json`。
+- 固定签名 `0.12.4 (46)` 已原位安装并启动；已安装资源确认包含 Kick75 sleep driver，运行诊断为 `nuphy.kick75 / USB-C / LightingAvailable=1 / HID open=0 / 输入监控=1 / 辅助功能=1`。Development DMG 结构与 CRC 校验通过，SHA-256：`4c107669ea27e12f7608a70611cd5ee516ce52d3b19989bd0fbdb6b5c6522a25`。
+
+## 0.12.3 已完成（Kick75 侧灯切换可靠性）
+
+- 定位“侧灯切换容易失败”不是线材或权限问题：旧 UI 把 Air75 V3 的五种侧灯模式复用于 Kick75，误向 Kick75 发送模式 4“律动”。固件会返回完整 D6 ACK，但 D5 会停在 4 并忽略后续 0–3 模式切换。
+- 对照官方 NuPhyIO 模型配置与 Kick75 Quick Guide，确认 Kick75 只支持 0 流光、1 霓虹、2 常亮、3 呼吸；应用改为型号级模式白名单，UI 和 driver 双层拒绝向 Kick75 写模式 4，Air75 V3 的五种模式保持不变。
+- 用户按官方 `Fn + M + ←` 后，D5 从模式 4 恢复为 0。受保护 Probe 随后逐项写入 0、1、2、3：每项完整 ACK，0/50/100/180/300/500/800ms D5 均精确一致；每轮和最终双 handle 状态精确恢复。备份：`2026-07-21T05-54-08Z-hardware-lighting.json`。
+- 正式 driver 对 ACK 后的 D5 最多做五次有界回读，只重读、不重复发送不确定写入；真实拒绝仍会失败并回滚。单次设置失败后会重新读取当前灯光，通道仍正常时不再把全部控件永久置灰。
+- Debug App、Protocol Probe 与 software-only SelfTest 全部通过；固定签名 `0.12.3 (45)` 已原位安装并启动。Designated Requirement 与旧版一致；运行诊断确认 `NuPhy Kick75`、USB-C、`LightingAvailable=1`、HID open `0`、输入监控/辅助功能均为 `1`。
+
+## 0.12.2 已完成（Kick75 背光与侧灯 D6 实机解锁）
+
+- 连续 8 次只读确认 Kick75 D5 两个 17-byte 状态稳定；官方 NuPhyIO 模型资料确认 handle 0 / 1 分别是 Mac / Windows 灯光 Profile。
+- 受保护 Probe 在每轮写入前保存完整双 handle 备份，只写 Mac handle 0，依次完成 D6 no-op、背光模式、背光常亮颜色、侧灯模式、侧灯常亮颜色；每项均要求完整 ACK、D5 回读和测试后精确恢复，最终全项通过。
+- Kick75 RGB 回读存在已验证的单通道 `+1` 固件量化，正式驱动仅对 RGB bytes 6–8、14–16 容许 ±1；模式、亮度、速度、方向及其他字段仍必须逐字节一致。
+- 正式 driver 对 Air75 V3 保持 handles 0/1 写入；Kick75 仅允许 handle 0。任何 ACK/回读失败都会尝试恢复操作前状态，Windows handle 1 不再被修改。
+- Debug/arm64 Release 编译和 `Air75CoreSelfTest --software-only` 全部通过；固定签名 `0.12.2 (44)` 已原位安装并启动。运行诊断确认 `NuPhy Kick75 / 19F5:1026`、`LightingAvailable=1`、USB-C、HID open `0`、输入监控/辅助功能均为 `1`，Kick75 背光与侧灯控件已安全解除灰色。
+
+## 0.12.1 已完成（Kick75 Agent 单键状态灯）
+
+- Kick75 `0x19F5:0x1026` 实机只读返回 `D1=0x55`（85 颗 LED），D5 两个 17-byte 灯效状态与 D2 颜色读取有效；D8 对索引 1–6 的 24-byte 测试完整回显并自动恢复，确认 Esc=0、F1–F6=1–6。
+- 新增 Kick75 独立灯光路由与 `nuphy.kick75.ansi-d8` 布局，Agent 1–6 的 F13–F18 专用事件分别落到物理 F1–F6；安装后 D2 再次回读确认 Esc 黑、当前 F1 蓝、F2–F6 白，确实写入键盘而非只更新 UI。
+- Kick75 只开放 D5/D2 读取与 D8 Agent 单键状态灯。D6 handle 0 原值写回完全一致，但 handle 1 会被固件规范化内部字段，因此普通背光、侧灯、恢复和休眠写入继续禁用，避免改变用户原生灯效。
+- 灯光驱动改为按 Profile/PID 路由，Air75 V3 仍保留 USB/U1 完整控制；Kick75 只匹配 USB PID 0x1026，不会误连 U1 或冒充 Air75。
+- `Air75CoreSelfTest --software-only` 全部通过；固定签名 arm64 Release 已安装为 `0.12.1 (43)`，应用诊断为 USB-C 状态灯通道已就绪、六个 Agent 状态已同步，HID open `0`、辅助功能 `1`。
+
+## 0.12.0 已完成（Kick75 F 区与旋钮首轮实机适配）
+
+- 研发 VID/PID 表与实机枚举共同确认 Kick75 IO 为 `0x19F5:0x1026`；应用精确显示 `NuPhy Kick75` / `nuphy.kick75`，不再依赖模糊产品名。
+- 只读 S4 回读确认 Kick75 为 8 层、每模式 4 层、`6x15 + 2` encoder entries、每层 92 entries、总计 1472 bytes；写入前完整备份已保存。
+- 新增独立 `Kick75KeymapController`，只把 Mac/Windows 基础层物理 F1–F12 改成 F13–F24，并把八层旋钮按下/右转/左转分别改成 Pause/Print Screen/Scroll Lock；严格拒绝错误长度、未知矩阵和混合半写状态。
+- 写入只发送发生变化的 56-byte chunks，随后完整回读；失败自动回滚对应 chunks 并再次完整回读。2026-07-21 实机安装成功，独立只读复核逐层确认目标值。
+- 配置升级到 schema 11：Air75 V3 与 Kick75 分别保存硬件安装状态、原始备份、设备指纹及每型号自定义键位，配置第二把键盘不会覆盖第一把键盘的安全恢复记录。
+- 修复旧多型号构建把 Kick75 Agent 1 错存成 F14 的明确混合序列；当前运行绑定为物理 F1–F12，安装后专用事件为 F13–F24。
+- Debug build、software-only SelfTest（含未知矩阵拒绝、无关字节不变和双型号独立恢复状态）及固定签名 arm64 App 通过；安装版 `0.12.0 (42)`，HID open `0`、辅助功能 `1`。
+- 用户已确认除灯光外按键和旋钮功能正常；灯光部分由 0.12.1 的 D8-only driver 补齐。
+
+## 0.11.7 已完成（移除灯光亮度控制）
+
+- 按用户产品决策，从灯光页删除普通背光和普通侧灯两处亮度滑块及百分比显示。
+- 同步删除对应 SwiftUI 临时状态、延迟写入任务和生命周期同步，避免留下不可见但仍运行的亮度写入逻辑。
+- 底层灯光状态解析和 driver 亮度字段继续保留，用于保持键盘现有设置及协议兼容；灯效、常亮颜色、休眠时间和六任务状态灯不受影响。
+- Debug App 编译和 software-only SelfTest 通过；完整软件回归没有受到界面删除影响。
+- Universal（arm64 + x86_64）Release、固定签名、DMG CRC/结构验证及 0.11.7 (34) 原位安装通过。Development DMG：`dist/NAgentBridge-0.11.7-Development.dmg`；SHA-256：`bf31a20a7ab6c4a4ff42a75c07a0196414bfc08009aaf0321186ed0e4db0ec15`。
+
 ## 0.11.6 已完成（修复非确认界面误亮橙灯）
 
 - 用户实机发现普通任务运行时，即使没有可处理的批准卡，Agent 键仍可能变橙。根因是 Codex 输入框常驻“请求批准 / Request approval”模式入口；旧辅助功能扫描把全窗口按钮标签混在一起，可能把这个入口与页面其他取消类按钮错误组合成确认卡。

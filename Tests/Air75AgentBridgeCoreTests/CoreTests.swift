@@ -155,7 +155,7 @@ final class CoreTests: XCTestCase {
         }
         try store.save(legacy)
         let migrated = store.load()
-        XCTAssertEqual(migrated.schemaVersion, 9)
+        XCTAssertEqual(migrated.schemaVersion, 11)
         XCTAssertEqual(migrated.keyBindings.map(\.usage), Array(0x3A...0x45))
         XCTAssertEqual(migrated.agentLightingEnabled, true)
         XCTAssertFalse(migrated.overlayEnabled)
@@ -185,6 +185,26 @@ final class CoreTests: XCTestCase {
         XCTAssertNotNil(KeyboardDriverRegistry.lightingDriver(for: .air75V3Fallback))
     }
 
+    func testKick75DeveloperIdentitySelectsKickProfile() {
+        let kick = DeviceProfile(
+            schemaVersion: 2, model: "NuPhy Kick75",
+            usbIdentities: [.init(vendorID: 0x19F5, productID: 0x1026)],
+            bluetoothVendorIDs: [0x07D7, 0x19F5], productAliases: ["Kick75", "Kick75 IO"],
+            manufacturerAliases: ["NuPhy"], allowedUsagePages: [1, 7, 12],
+            specialUsages: Array(0x3A...0x45), id: "nuphy.kick75", protocolFamily: .nuphyS4,
+            capabilities: .init(hasKnob: true, hasSidelight: true)
+        )
+        let registry = DeviceProfileRegistry(profiles: [.air75V3Fallback, kick])
+        let match = registry.bestMatch(
+            vendorID: 0x19F5, productID: 0x1026, product: "Kick75 IO", manufacturer: "NuPhy",
+            transport: .usb, usagePage: 1, usage: 6, confirmedFingerprint: nil
+        )
+        XCTAssertEqual(match?.profile.profileID, "nuphy.kick75")
+        XCTAssertEqual(match?.confidence, 100)
+        XCTAssertNil(KeyboardDriverRegistry.keymapDriver(for: match?.profile))
+        XCTAssertNil(KeyboardDriverRegistry.lightingDriver(for: match?.profile))
+    }
+
     func testHardwareProfileUsesUniqueTopRowAndKnobEvents() throws {
         var bytes = [UInt8](repeating: 0, count: Air75V3KeymapController.keymapByteCount)
         func set(_ value: UInt16, _ entry: Int) {
@@ -206,6 +226,85 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(get(97), 0x0046)
         XCTAssertTrue(Air75V3KeymapController.hasBridgeProfile(result))
         XCTAssertFalse(Air75V3KeymapController.hasBridgeProfile(bytes))
+    }
+
+    func testKick75HardwareProfileUsesVerifiedIndependentGeometry() throws {
+        let entriesPerLayer = 92
+        var bytes = [UInt8](repeating: 0, count: Kick75KeymapController.keymapByteCount)
+        func set(_ value: UInt16, layer: Int, entry: Int) {
+            let offset = (layer * entriesPerLayer + entry) * 2
+            bytes[offset] = UInt8(value >> 8)
+            bytes[offset + 1] = UInt8(value & 0xFF)
+        }
+        let macRow: [UInt16] = [
+            0x0069, 0x006A, 0x7E06, 0x7E07, 0x7E08, 0x7E16,
+            0x00AC, 0x00AE, 0x00AB, 0x00A8, 0x00AA, 0x00A9,
+        ]
+        for (offset, value) in macRow.enumerated() { set(value, layer: 0, entry: offset + 1) }
+        for (offset, value) in (0x003A...0x0045).enumerated() {
+            set(UInt16(value), layer: 4, entry: offset + 1)
+        }
+        for layer in 0..<8 {
+            set(0x00A8, layer: layer, entry: 74)
+            set(0x00A9, layer: layer, entry: 90)
+            set(0x00AA, layer: layer, entry: 91)
+        }
+        let result = try Kick75KeymapController().makeBridgeProfile(from: bytes)
+        func get(_ layer: Int, _ entry: Int) -> UInt16 {
+            let offset = (layer * entriesPerLayer + entry) * 2
+            return (UInt16(result[offset]) << 8) | UInt16(result[offset + 1])
+        }
+        XCTAssertEqual((1...12).map { get(0, $0) }, Array(0x68...0x73).map(UInt16.init))
+        XCTAssertEqual((1...12).map { get(4, $0) }, Array(0x68...0x73).map(UInt16.init))
+        XCTAssertEqual(get(0, 74), 0x0048)
+        XCTAssertEqual(get(0, 90), 0x0046)
+        XCTAssertEqual(get(0, 91), 0x0047)
+        XCTAssertTrue(Kick75KeymapController.hasBridgeProfile(result))
+        XCTAssertFalse(Kick75KeymapController.hasBridgeProfile(bytes))
+    }
+
+    func testInstalledHardwareProfilesAreIndependentPerModel() {
+        var configuration = BridgeConfiguration()
+        configuration.setHardwareProfileState(
+            InstalledHardwareProfileState(installed: true, backupName: "air.json"),
+            for: "nuphy.air75-v3"
+        )
+        configuration.setBindings(BridgeConfiguration.hardwareProfileBindings, for: "nuphy.air75-v3")
+        configuration.setHardwareProfileState(
+            InstalledHardwareProfileState(installed: true, backupName: "kick.json"),
+            for: "nuphy.kick75"
+        )
+        configuration.setBindings(BridgeConfiguration.hardwareProfileBindings, for: "nuphy.kick75")
+
+        XCTAssertTrue(configuration.hasInstalledHardwareProfile(for: "nuphy.air75-v3"))
+        XCTAssertTrue(configuration.hasInstalledHardwareProfile(for: "nuphy.kick75"))
+        XCTAssertEqual(configuration.hardwareProfileState(for: "nuphy.air75-v3")?.backupName, "air.json")
+        XCTAssertEqual(configuration.hardwareProfileState(for: "nuphy.kick75")?.backupName, "kick.json")
+
+        configuration.setHardwareProfileState(nil, for: "nuphy.kick75")
+        XCTAssertTrue(configuration.hasInstalledHardwareProfile(for: "nuphy.air75-v3"))
+        XCTAssertFalse(configuration.hasInstalledHardwareProfile(for: "nuphy.kick75"))
+    }
+
+    func testKick75LightingDriverEnablesOnlyVerifiedMacHandle() {
+        let profile = DeviceProfile(
+            schemaVersion: 2, model: "NuPhy Kick75",
+            usbIdentities: [.init(vendorID: 0x19F5, productID: 0x1026)],
+            bluetoothVendorIDs: [0x07D7, 0x19F5], productAliases: ["Kick75", "Kick75 IO"],
+            manufacturerAliases: ["NuPhy"], allowedUsagePages: [1, 7, 12],
+            specialUsages: Array(0x3A...0x45), id: "nuphy.kick75", protocolFamily: .nuphyS4,
+            capabilities: .init(
+                keymapDriverID: "nuphy.s4.kick75-keymap",
+                lightingDriverID: "nuphy.s4.kick75-signal-lighting",
+                hasKnob: true,
+                hasSidelight: true
+            )
+        )
+        let driver = KeyboardDriverRegistry.lightingDriver(for: profile)
+        XCTAssertTrue(driver?.supportsFullLightingControl == true)
+        XCTAssertEqual((driver as? Air75V3LightingController)?.writableLightingHandles, [0])
+        XCTAssertEqual(driver?.supportedSidelightModes, [.flowing, .neon, .staticColor, .breathing])
+        XCTAssertFalse(driver?.supportedSidelightModes.contains(.rhythm) == true)
     }
 
     func testCustomBindingsSurviveHardwareProfileInstallAndRestore() {

@@ -158,6 +158,37 @@ check(installedBindings[0].usage == 0x1E && installedBindings[1].usage == 0x69,
 check(BridgeConfiguration.bindingsForOriginalHardwareProfile(installedBindings).map(\.usage)
         == customBindings.map(\.usage),
       "custom key survives original-profile restoration")
+var multiModelBindings = BridgeConfiguration()
+multiModelBindings.setHardwareProfileState(
+    InstalledHardwareProfileState(installed: true, backupName: "air-original.json"),
+    for: "nuphy.air75-v3"
+)
+multiModelBindings.setBindings(BridgeConfiguration.hardwareProfileBindings, for: "nuphy.air75-v3")
+check(multiModelBindings.bindings(for: "nuphy.air75-v3").map(\.usage) == Array(0x68...0x73),
+      "keeps installed Air75 hardware-profile usages")
+check(multiModelBindings.bindings(for: "nuphy.kick75").map(\.usage) == Array(0x3A...0x45),
+      "derives physical F1-F12 for connected Kick75")
+let kickProfile = DeviceProfile(
+    schemaVersion: 2, model: "NuPhy Kick75",
+    usbIdentities: [.init(vendorID: 0x19F5, productID: 0x1026)],
+    bluetoothVendorIDs: [0x07D7, 0x19F5], productAliases: ["Kick75", "Kick75 IO"],
+    manufacturerAliases: ["NuPhy"], allowedUsagePages: [1, 7, 12],
+    specialUsages: Array(0x3A...0x45), id: "nuphy.kick75", protocolFamily: .nuphyS4,
+    capabilities: .init(hasKnob: true, hasSidelight: true)
+)
+let kickRegistry = DeviceProfileRegistry(profiles: [profile, kickProfile])
+let kickMatch = kickRegistry.bestMatch(
+    vendorID: 0x19F5, productID: 0x1026, product: "Kick75 IO", manufacturer: "NuPhy",
+    transport: .usb, usagePage: 1, usage: 6, confirmedFingerprint: nil
+)
+check(kickMatch?.profile.profileID == "nuphy.kick75" && kickMatch?.confidence == 100,
+      "recognizes attached Kick75 by exact developer VID/PID")
+var kickBindings = BridgeConfiguration.defaultBindings
+kickBindings[0] = KeyBinding(usagePage: 0x07, usage: 0x1E, action: .agent1)
+multiModelBindings.setBindings(kickBindings, for: "nuphy.kick75")
+check(multiModelBindings.bindings(for: "nuphy.kick75")[0].usage == 0x1E
+        && multiModelBindings.bindings(for: "nuphy.air75-v3")[0].usage == 0x68,
+      "stores per-model custom key bindings independently")
 check(!KeyBinding.isSupportedInputSource(
     usagePage: 0x07,
     usage: KeyBinding.hidArrayUsageSentinel
@@ -225,6 +256,18 @@ check(SignalLightLayout.index(layoutID: "nuphy.air75-v3.ansi-d8", usagePage: 0x0
       "Air75 V3 number 1 resolves to official-layout light index")
 check(SignalLightLayout.index(layoutID: "nuphy.air75-v3.ansi-d8", usagePage: 0x07, usage: 0x68) == 1,
       "Air75 V3 Bridge F13 source resolves to physical F1 light")
+check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07, usage: 0x68) == 1,
+      "Kick75 Bridge F13 source resolves to verified physical F1 light")
+check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07, usage: 0x73) == 12,
+      "Kick75 Bridge F24 source resolves to verified physical F12 light")
+check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07, usage: 0x14) == 30,
+      "Kick75 Q resolves through the official layout after three hidden encoder entries")
+check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07, usage: 0x04) == 45,
+      "Kick75 A resolves through the official visible-key order")
+check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07, usage: 0x2C) == 74,
+      "Kick75 Space resolves through the official visible-key order")
+check(SignalLightLayout.index(layoutID: "nuphy.kick75.ansi-d8", usagePage: 0x07, usage: 0x4F) == 79,
+      "Kick75 Right Arrow resolves through the official visible-key order")
 check(Air75V3LightingController.escapeSignalLightIndex == 0,
       "legacy task color can be explicitly cleared from Esc")
 
@@ -445,6 +488,19 @@ configuration.enabled = true
 do {
     try store.save(configuration)
     check(store.load().enabled, "configuration atomic round-trip")
+    var persistedKick = BridgeConfiguration()
+    var persistedKickBindings = BridgeConfiguration.defaultBindings
+    persistedKickBindings[0] = KeyBinding(
+        usagePage: 0x07,
+        usage: 0x14,
+        action: .agent1,
+        signalLightIndex: 30
+    )
+    persistedKick.setBindings(persistedKickBindings, for: "nuphy.kick75")
+    try store.save(persistedKick)
+    let reloadedKick = store.load().bindings(for: "nuphy.kick75")
+    check(reloadedKick[0].usage == 0x14 && reloadedKick[0].signalLightIndex == 30,
+          "persists Kick75 Q Agent binding and signal-light index")
     var legacy = BridgeConfiguration()
     legacy.schemaVersion = 1
     legacy.keyBindings = zip(0x68...0x73, BridgeConfiguration.defaultBindings.map(\.action)).map {
@@ -452,7 +508,7 @@ do {
     }
     try store.save(legacy)
     let migrated = store.load()
-    check(migrated.schemaVersion == 9
+    check(migrated.schemaVersion == 11
             && migrated.sidelightRestoredAfterSignalLights == false
             && migrated.resolvedAgentSourceMode == .recent
             && migrated.keyBindings.map(\.usage) == Array(0x3A...0x45),
@@ -464,19 +520,51 @@ do {
     corrupted.keyBindings[0].usage = KeyBinding.hidArrayUsageSentinel
     try store.save(corrupted)
     let repaired = store.load()
-    check(repaired.schemaVersion == 9
+    check(repaired.schemaVersion == 11
             && repaired.sidelightRestoredAfterSignalLights == false
             && repaired.keyBindings[0].usage == 0x68
             && repaired.keyBindings.dropFirst().map(\.usage) == Array(0x69...0x73),
           "repairs persisted HID array sentinel without changing other bindings")
+    var mixedKick = BridgeConfiguration()
+    mixedKick.modelKeyBindings = ["nuphy.kick75": BridgeConfiguration.defaultBindings]
+    mixedKick.modelKeyBindings?["nuphy.kick75"]?[0].usage = 0x69
+    try store.save(mixedKick)
+    let repairedKick = store.load()
+    check(repairedKick.bindings(for: "nuphy.kick75").map(\.usage) == Array(0x3A...0x45),
+          "repairs legacy mixed Kick75 F14/F2-F12 mapping")
     check(DeviceProfileRegistry.loadBundled().profile(id: "nuphy.air75-v3") != nil,
           "loads bundled model profile registry")
     let bundledProfiles = DeviceProfileRegistry.loadBundled()
     check(["nuphy.air65-v3", "nuphy.air100-v3", "nuphy.kick75", "nuphy.node75", "nuphy.node100"]
         .allSatisfy { bundledProfiles.profile(id: $0) != nil },
           "loads all requested NuPhy software-mode profiles")
+    let bundledKickMatch = bundledProfiles.bestMatch(
+        vendorID: 0x19F5, productID: 0x1026, product: "Kick75 IO", manufacturer: "NuPhy",
+        transport: .usb, usagePage: 1, usage: 6, confirmedFingerprint: nil
+    )
+    check(bundledKickMatch?.profile.profileID == "nuphy.kick75"
+            && bundledKickMatch?.confidence == 100,
+          "bundled profile recognizes attached Kick75 IO identity")
     check(KeyboardDriverRegistry.keymapDriver(for: .air75V3Fallback) != nil,
           "registers verified Air75 V3 keymap driver")
+    check(KeyboardDriverRegistry.keymapDriver(for: bundledProfiles.profile(id: "nuphy.kick75")) != nil,
+          "registers verified Kick75 keymap driver")
+    let kickLighting = KeyboardDriverRegistry.lightingDriver(
+        for: bundledProfiles.profile(id: "nuphy.kick75")
+    )
+    check(kickLighting?.profileID == "nuphy.kick75"
+            && kickLighting?.supportsFullLightingControl == true,
+          "registers hardware-verified Kick75 D6 zone and D8 status-light driver")
+    check((kickLighting as? Air75V3LightingController)?.writableLightingHandles == [0],
+          "limits Kick75 D6 writes to the verified Mac lighting handle")
+    check(kickLighting?.supportedSidelightModes == [.flowing, .neon, .staticColor, .breathing],
+          "limits Kick75 sidelight modes to the four official effects")
+    check(KeyboardDriverRegistry.sleepDriver(
+            for: bundledProfiles.profile(id: "nuphy.kick75"))?.profileID == "nuphy.kick75",
+          "registers separately verified Kick75 F3/F5 sleep driver")
+    check(KeyboardDriverRegistry.lightingDriver(for: .air75V3Fallback)?.supportedSidelightModes
+            == Air75SidelightMode.allCases,
+          "keeps all five Air75 V3 sidelight modes")
     check(KeyboardDriverRegistry.sleepDriver(for: .air75V3Fallback) != nil,
           "registers verified Air75 V3 sleep driver")
 } catch {
@@ -551,6 +639,62 @@ do {
           "hardware knob unique left-click-right events")
 } catch {
     check(false, "hardware profile transform: \(error.localizedDescription)")
+}
+
+do {
+    let entriesPerLayer = 92
+    var original = [UInt8](repeating: 0, count: Kick75KeymapController.keymapByteCount)
+    func setKick(_ value: UInt16, layer: Int, entry: Int) {
+        let offset = (layer * entriesPerLayer + entry) * 2
+        original[offset] = UInt8(value >> 8)
+        original[offset + 1] = UInt8(value & 0xFF)
+    }
+    let macRow: [UInt16] = [
+        0x0069, 0x006A, 0x7E06, 0x7E07, 0x7E08, 0x7E16,
+        0x00AC, 0x00AE, 0x00AB, 0x00A8, 0x00AA, 0x00A9,
+    ]
+    for (offset, value) in macRow.enumerated() { setKick(value, layer: 0, entry: offset + 1) }
+    for (offset, value) in (0x003A...0x0045).enumerated() {
+        setKick(UInt16(value), layer: 4, entry: offset + 1)
+    }
+    for layer in 0..<8 {
+        setKick(0x00A8, layer: layer, entry: 74)
+        setKick(0x00A9, layer: layer, entry: 90)
+        setKick(0x00AA, layer: layer, entry: 91)
+    }
+    let candidate = try Kick75KeymapController().makeBridgeProfile(from: original)
+    func kickCode(_ bytes: [UInt8], layer: Int, entry: Int) -> UInt16 {
+        let offset = (layer * entriesPerLayer + entry) * 2
+        return (UInt16(bytes[offset]) << 8) | UInt16(bytes[offset + 1])
+    }
+    check((1...12).map { kickCode(candidate, layer: 0, entry: $0) }
+            == Array(0x68...0x73).map(UInt16.init),
+          "Kick75 physical F row becomes F13-F24")
+    check(kickCode(candidate, layer: 0, entry: 74) == 0x0048
+            && kickCode(candidate, layer: 0, entry: 90) == 0x0046
+            && kickCode(candidate, layer: 0, entry: 91) == 0x0047,
+          "Kick75 knob becomes unique press-right-left events")
+    check(Kick75KeymapController.hasBridgeProfile(candidate)
+            && !Kick75KeymapController.hasBridgeProfile(original),
+          "Kick75 distinguishes original backup from Bridge profile")
+    check(Kick75KeymapController.isPlausibleKeymap(original)
+            && Kick75KeymapController.isPlausibleKeymap(candidate),
+          "Kick75 accepts only its verified original or Bridge layout")
+    let changedOffsets = Set(original.indices.filter { original[$0] != candidate[$0] })
+    let expectedEntries = Set(
+        [0, 4].flatMap { layer in (1...12).map { layer * entriesPerLayer + $0 } }
+            + (0..<8).flatMap { layer in [74, 90, 91].map { layer * entriesPerLayer + $0 } }
+    )
+    check(changedOffsets.allSatisfy { expectedEntries.contains($0 / 2) },
+          "Kick75 transform leaves every unrelated key byte untouched")
+    var incompatible = original
+    let badOffset = (0 * entriesPerLayer + 1) * 2
+    incompatible[badOffset] = 0x12
+    incompatible[badOffset + 1] = 0x34
+    check(!Kick75KeymapController.isPlausibleKeymap(incompatible),
+          "Kick75 rejects an unexpected matrix before any write")
+} catch {
+    check(false, "Kick75 hardware profile transform: \(error.localizedDescription)")
 }
 
 if CommandLine.arguments.contains("--software-only") {

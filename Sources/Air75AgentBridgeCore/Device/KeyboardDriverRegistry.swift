@@ -38,6 +38,12 @@ public protocol KeyboardKeymapDriver: AnyObject, Sendable {
 
 public protocol KeyboardLightingDriver: AnyObject, Sendable {
     var profileID: String { get }
+    /// True only after D6 zone writes and readback have been validated for
+    /// this exact model. D8-only models can still expose Agent status lights.
+    var supportsFullLightingControl: Bool { get }
+    /// Exact sidelight modes exposed by the official configurator for this
+    /// model. Models in the same S4 family do not necessarily share modes.
+    var supportedSidelightModes: [KeyboardSidelightMode] { get }
     /// Returns a channel that is present on this Mac. A successful protocol
     /// read is still required before the UI marks lighting as available.
     func detectedConnection() -> KeyboardLightingConnection?
@@ -74,9 +80,14 @@ extension Air75V3KeymapController: KeyboardKeymapDriver {
     public func containsBridgeProfile(_ bytes: [UInt8]) -> Bool { Self.hasBridgeProfile(bytes) }
 }
 
-extension Air75V3LightingController: KeyboardLightingDriver {
-    public var profileID: String { "nuphy.air75-v3" }
+extension Kick75KeymapController: KeyboardKeymapDriver {
+    public var profileID: String { "nuphy.kick75" }
+    public var keymapSize: Int { Self.keymapByteCount }
+    public func isPlausibleKeymap(_ bytes: [UInt8]) -> Bool { Self.isPlausibleKeymap(bytes) }
+    public func containsBridgeProfile(_ bytes: [UInt8]) -> Bool { Self.hasBridgeProfile(bytes) }
 }
+
+extension Air75V3LightingController: KeyboardLightingDriver {}
 
 extension Air75V3LightingController: KeyboardSleepDriver {}
 
@@ -84,9 +95,21 @@ extension Air75V3LightingController: KeyboardSleepDriver {}
 /// capability. A JSON file alone can enable safe software recognition, but it
 /// cannot authorize a vendor HID write path.
 public enum KeyboardDriverRegistry {
+    private static func kick75LightingController() -> Air75V3LightingController {
+        Air75V3LightingController(
+            profileID: "nuphy.kick75",
+            deviceDisplayName: "Kick75",
+            wiredProductID: Kick75KeymapController.productID,
+            supportsFullLightingControl: true,
+            writableLightingHandles: [0],
+            supportedSidelightModes: [.flowing, .neon, .staticColor, .breathing]
+        )
+    }
+
     public static func keymapDriver(for profile: DeviceProfile?) -> (any KeyboardKeymapDriver)? {
         switch profile?.capabilities?.keymapDriverID {
         case "nuphy.s4.air75v3-keymap": return Air75V3KeymapController()
+        case "nuphy.s4.kick75-keymap": return Kick75KeymapController()
         default: return nil
         }
     }
@@ -94,6 +117,8 @@ public enum KeyboardDriverRegistry {
     public static func lightingDriver(for profile: DeviceProfile?) -> (any KeyboardLightingDriver)? {
         switch profile?.capabilities?.lightingDriverID {
         case "nuphy.s4.17byte-lighting": return Air75V3LightingController()
+        case "nuphy.s4.kick75-signal-lighting":
+            return kick75LightingController()
         default: return nil
         }
     }
@@ -101,6 +126,7 @@ public enum KeyboardDriverRegistry {
     public static func sleepDriver(for profile: DeviceProfile?) -> (any KeyboardSleepDriver)? {
         switch profile?.capabilities?.sleepDriverID {
         case "nuphy.s4.air75v3-sleep": return Air75V3LightingController()
+        case "nuphy.s4.kick75-sleep": return kick75LightingController()
         default: return nil
         }
     }

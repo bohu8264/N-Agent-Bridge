@@ -1,5 +1,13 @@
 # Release
 
+## 0.11.7 Development Build
+
+- 版本：`0.11.7 (34)`。
+- 灯光页移除普通背光与普通侧灯的亮度滑块和百分比，保留灯效、常亮颜色、休眠时间与 Codex 六任务状态灯。
+- 删除界面层亮度临时状态及延迟 HID 写入任务；底层协议字段仍保留，切换灯效不会主动改变键盘现有亮度。
+- Debug App、software-only SelfTest、Universal（arm64 + x86_64）App、固定签名、DMG CRC/结构验证和 0.11.7 (34) 原位安装：通过。
+- Development DMG SHA-256：`bf31a20a7ab6c4a4ff42a75c07a0196414bfc08009aaf0321186ed0e4db0ec15`。
+
 ## 0.11.6 Development Build
 
 - 版本：`0.11.6 (33)`。

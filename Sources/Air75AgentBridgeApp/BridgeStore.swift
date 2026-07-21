@@ -8,6 +8,7 @@ import Foundation
 final class BridgeStore: ObservableObject {
     @Published var configuration: BridgeConfiguration
     @Published var devices: [DeviceSnapshot] = []
+    @Published private(set) var activeDeviceID: String?
     @Published var slots: [AgentSlot] = (1...6).map(AgentSlot.init)
     @Published var selectedSlot = 1
     @Published var composer = ""
@@ -78,12 +79,13 @@ final class BridgeStore: ObservableObject {
     private var wirelessLightingRetryTask: Task<Void, Never>?
     private var lastAgentPress: (slot: Int, threadID: String?, date: Date)?
     private var pendingCustomSlot: (index: Int, knownThreadIDs: Set<String>, expiresAt: Date)?
+    private var readOnlyInspectedDeviceIDs = Set<String>()
 
     init() {
         let loaded = configurationStore.load()
         configuration = loaded
-        hardwareProfileMessage = loaded.hardwareProfileInstalled == true
-            ? "键盘专用层已写入并在实机完整回读确认；物理 F1–F12 与旋钮可随蓝牙使用"
+        hardwareProfileMessage = loaded.hasAnyInstalledHardwareProfile
+            ? "已配置键盘的专用层均已在实机完整回读确认；物理 F1–F12 与旋钮可随蓝牙使用"
             : "尚未写入键盘专用层"
         showOnboarding = !loaded.hasCompletedOnboarding
         let registry = DeviceProfileRegistry.loadBundled()
@@ -95,7 +97,7 @@ final class BridgeStore: ObservableObject {
             // follows the currently installed, stably signed application.
             try? LaunchAtLoginManager.setEnabled(true)
         }
-        if loaded.hardwareProfileInstalled == true,
+        if loaded.hasAnyInstalledHardwareProfile,
            let result = try? codexKeybindingInstaller.install() {
             codexDesktopKeybindingsInstalled = true
             codexRestartRequired = result.changed || codexNeedsRestartForKeybindings()
@@ -109,6 +111,11 @@ final class BridgeStore: ObservableObject {
             .sink { [weak self] devices in
                 guard let self else { return }
                 self.devices = devices
+                if let activeDeviceID = self.activeDeviceID,
+                   !devices.contains(where: { $0.id == activeDeviceID }) {
+                    self.activeDeviceID = nil
+                }
+                self.syncActiveInputConfiguration()
                 self.bluetoothAssociationCandidate = devices.first(where: { $0.needsBluetoothAssociation })
                 if let first = devices.first {
                     let model = first.modelName ?? first.productName
@@ -125,6 +132,8 @@ final class BridgeStore: ObservableObject {
                 } else {
                     self.lastMessage = "等待受支持的 NuPhy 键盘连接"
                 }
+                self.publishDeviceDiagnostics()
+                self.inspectCurrentKeyboardIfNeeded()
 
                 // The U1 receiver is physically USB, but it is a distinct
                 // 2.4G lighting path. Re-probe whenever the active path
@@ -163,6 +172,7 @@ final class BridgeStore: ObservableObject {
         }
         deviceManager.deviceActivityHandler = { [self] interface in
             Task { @MainActor in
+                noteActiveDevice(for: interface)
                 noteActiveLightingConnection(for: interface)
                 scheduleWirelessLightingRetryIfNeeded()
             }
@@ -219,7 +229,13 @@ final class BridgeStore: ObservableObject {
     }
 
     var currentDevice: DeviceSnapshot? {
-        devices.first(where: { $0.isRecognized && $0.transports.contains(.bluetooth) })
+        activeDeviceID.flatMap { id in devices.first(where: { $0.id == id && $0.isRecognized }) }
+            ?? devices.first(where: { device in
+                device.isRecognized && device.interfaces.contains(where: {
+                    $0.transport == .usb && $0.productID != Air75V3LightingController.dongleProductID
+                })
+            })
+            ?? devices.first(where: { $0.isRecognized && $0.transports.contains(.bluetooth) })
             ?? devices.first(where: { $0.isRecognized })
     }
 
@@ -228,8 +244,32 @@ final class BridgeStore: ObservableObject {
     var agentKeyLabels: [String] {
         let actions: [BridgeAction] = [.agent1, .agent2, .agent3, .agent4, .agent5, .agent6]
         return actions.map { action in
-            configuration.keyBindings.first(where: { $0.action == action })?.displayName ?? "未设置"
+            activeKeyBindings.first(where: { $0.action == action })?.displayName ?? "未设置"
         }
+    }
+
+    var activeKeyBindings: [KeyBinding] {
+        let bindings = configuration.bindings(for: currentDevice?.profileID)
+        let layoutID = currentSignalLightLayoutID
+        return bindings.map { binding in
+            var resolved = binding
+            resolved.signalLightIndex = SignalLightLayout.index(
+                layoutID: layoutID,
+                usagePage: binding.usagePage,
+                usage: binding.usage
+            )
+            return resolved
+        }
+    }
+
+    var installedHardwareProfileIsCurrent: Bool {
+        configuration.hasInstalledHardwareProfile(for: currentDevice?.profileID)
+    }
+
+    var currentHardwareProfileNeedsInstallation: Bool {
+        guard let currentProfile = profile(for: currentDevice) else { return false }
+        return KeyboardDriverRegistry.keymapDriver(for: currentProfile) != nil
+            && !configuration.hasInstalledHardwareProfile(for: currentProfile.profileID)
     }
 
     var currentModelName: String {
@@ -240,7 +280,14 @@ final class BridgeStore: ObservableObject {
         guard let profile = profile(for: currentDevice) else { return "等待识别型号" }
         if KeyboardDriverRegistry.keymapDriver(for: profile) != nil,
            KeyboardDriverRegistry.lightingDriver(for: profile) != nil {
-            return "完整硬件控制"
+            return KeyboardDriverRegistry.lightingDriver(for: profile)?.supportsFullLightingControl == true
+                ? "完整硬件控制"
+                : "按键、旋钮与 Agent 状态灯已验证"
+        }
+        if KeyboardDriverRegistry.keymapDriver(for: profile) != nil {
+            return installedHardwareProfileIsCurrent
+                ? "F 区与旋钮硬件控制已配置 · 灯光待验证"
+                : "可配置 F 区与旋钮硬件控制 · 灯光待验证"
         }
         return "安全软件模式 · 灯光待实机验证"
     }
@@ -250,23 +297,26 @@ final class BridgeStore: ObservableObject {
     }
 
     private var currentLightingProfile: DeviceProfile? {
-        if let configurableDevice = devices.first(where: {
-            $0.isRecognized
-                && $0.transports.contains(.usb)
-                && profile(for: $0)?.capabilities?.lightingDriverID != nil
-        }) {
-            return profile(for: configurableDevice)
-        }
-        if let installed = profileRegistry.profile(id: configuration.hardwareProfileID),
-           installed.capabilities?.lightingDriverID != nil {
-            return installed
-        }
-        let connected = profile(for: currentDevice)
-        return connected?.capabilities?.lightingDriverID == nil ? nil : connected
+        guard let connected = profile(for: currentDevice),
+              connected.capabilities?.lightingDriverID != nil else { return nil }
+        return connected
     }
 
     private var currentLightingDriver: (any KeyboardLightingDriver)? {
         KeyboardDriverRegistry.lightingDriver(for: currentLightingProfile)
+    }
+
+    var fullLightingControlSupported: Bool {
+        currentLightingDriver?.supportsFullLightingControl == true
+    }
+
+    var supportedSidelightModes: [Air75SidelightMode] {
+        currentLightingDriver?.supportedSidelightModes ?? Air75SidelightMode.allCases
+    }
+
+    var sidelightModeNeedsHardwareRecovery: Bool {
+        guard let rawMode = lightingStates.first?.sidelight.mode else { return false }
+        return !supportedSidelightModes.contains(where: { $0.rawValue == rawMode })
     }
 
     private var currentSleepDriver: (any KeyboardSleepDriver)? {
@@ -274,8 +324,10 @@ final class BridgeStore: ObservableObject {
     }
 
     private var currentSignalLightLayoutID: String? {
-        profile(for: currentDevice)?.capabilities?.signalLightLayoutID
-            ?? profileRegistry.profile(id: configuration.hardwareProfileID)?.capabilities?.signalLightLayoutID
+        if currentDevice != nil {
+            return profile(for: currentDevice)?.capabilities?.signalLightLayoutID
+        }
+        return nil
     }
 
     var signalLightingSupported: Bool {
@@ -284,40 +336,40 @@ final class BridgeStore: ObservableObject {
 
     func oneClickEnable() {
         guard !hardwareProfileBusy else { return }
-        if configuration.hardwareProfileInstalled == true {
-            guard let device = currentDevice,
-                  device.profileID == configuration.hardwareProfileID else {
-                lastMessage = "当前键盘不是已安装专用层的型号；请先连接原键盘并恢复，再配置另一型号"
-                return
-            }
+        guard let device = currentDevice else {
+            lastMessage = "请先连接受支持的 NuPhy 键盘"
+            return
+        }
+        if configuration.hasInstalledHardwareProfile(for: device.profileID) {
             configuration.enabled = true
             configuration.codexModeEnabled = true
             configuration.mappingPausedByUser = false
             persistConfiguration()
             if !codexDesktopKeybindingsInstalled { installCodexDesktopBindings() }
             lastMessage = inputMonitoringGranted && accessibilityGranted
-                ? "\(device.modelName ?? device.productName) 控制已启用"
+                ? "\(device.modelName ?? device.productName) 专用层控制已启用"
                 : "控制已启用，还需要完成两项系统权限"
             showOverlay("键盘控制已启用", detail: "专用按键现在只控制 Codex")
             return
         }
-        guard let usbDevice = devices.first(where: { $0.isRecognized && $0.transports.contains(.usb) }) else {
+        guard let usbDevice = (device.transports.contains(.usb) ? device : nil)
+            ?? devices.first(where: {
+                $0.isRecognized && $0.transports.contains(.usb) && $0.profileID == device.profileID
+            }) else {
             lastMessage = "请先用 USB-C 数据线连接受支持的 NuPhy 键盘"
             showOverlay("需要 USB-C", detail: "首次写入键盘专用层时请连接数据线")
             return
         }
         let targetProfile = profile(for: usbDevice)
         guard let controller = KeyboardDriverRegistry.keymapDriver(for: targetProfile) else {
-            configuration.boundFingerprint = usbDevice.fingerprint
-            configuration.hardwareProfileID = targetProfile?.profileID
             configuration.mappingMode = .runtime
             configuration.enabled = true
             configuration.codexModeEnabled = true
             configuration.mappingPausedByUser = false
-            configuration.hardwareProfileInstalled = false
-            configuration.keyBindings = BridgeConfiguration.bindingsForOriginalHardwareProfile(
-                configuration.keyBindings
+            let softwareBindings = BridgeConfiguration.bindingsForOriginalHardwareProfile(
+                configuration.bindings(for: targetProfile?.profileID)
             )
+            configuration.setBindings(softwareBindings, for: targetProfile?.profileID)
             persistConfiguration()
             if !codexDesktopKeybindingsInstalled { installCodexDesktopBindings() }
             lastMessage = "\(usbDevice.modelName ?? usbDevice.productName) 已启用安全的软件按键模式；未向未经实机验证的固件写入配置"
@@ -329,6 +381,7 @@ final class BridgeStore: ObservableObject {
         let configStore = configurationStore
         let currentConfiguration = configuration
         let targetProfileID = controller.profileID
+        let currentProfileState = currentConfiguration.hardwareProfileState(for: targetProfileID)
         let targetModelName = usbDevice.modelName ?? usbDevice.productName
         Task {
             do {
@@ -347,7 +400,7 @@ final class BridgeStore: ObservableObject {
                         guard let recovered = configStore.loadOriginalKeymapBackup(
                             profileID: targetProfileID,
                             expectedByteCount: controller.keymapSize,
-                            preferredName: currentConfiguration.hardwareProfileBackupName,
+                            preferredName: currentProfileState?.backupName,
                             isPlausibleKeymap: controller.isPlausibleKeymap,
                             isBridgeProfile: { controller.containsBridgeProfile($0) }
                         ) else { throw Air75KeymapError.originalBackupNotFound }
@@ -370,17 +423,22 @@ final class BridgeStore: ObservableObject {
                     return (installed, keymapBackup, runtimeBackup, keybindings)
                 }.value
                 lastBackupURL = result.1
-                configuration.boundFingerprint = usbDevice.fingerprint
                 configuration.mappingMode = .hardwareProfile
                 configuration.enabled = true
                 configuration.codexModeEnabled = true
                 configuration.mappingPausedByUser = false
-                configuration.hardwareProfileInstalled = true
-                configuration.hardwareProfileID = targetProfileID
-                configuration.hardwareProfileBackupName = result.1.lastPathComponent
-                configuration.keyBindings = BridgeConfiguration.bindingsForInstalledHardwareProfile(
-                    configuration.keyBindings
+                let installedBindings = BridgeConfiguration.bindingsForInstalledHardwareProfile(
+                    configuration.bindings(for: targetProfileID)
                 )
+                configuration.setHardwareProfileState(
+                    InstalledHardwareProfileState(
+                        installed: true,
+                        backupName: result.1.lastPathComponent,
+                        boundFingerprint: usbDevice.fingerprint
+                    ),
+                    for: targetProfileID
+                )
+                configuration.setBindings(installedBindings, for: targetProfileID)
                 persistConfiguration()
                 codexDesktopKeybindingsInstalled = true
                 codexRestartRequired = result.3.changed || codexNeedsRestartForKeybindings()
@@ -411,7 +469,7 @@ final class BridgeStore: ObservableObject {
 
     func disable() {
         guard !hardwareProfileBusy else { return }
-        guard configuration.hardwareProfileInstalled == true else {
+        guard installedHardwareProfileIsCurrent else {
             finishSoftwareDisable(message: "Codex 控制已停止；键盘保持普通行为")
             return
         }
@@ -425,7 +483,10 @@ final class BridgeStore: ObservableObject {
 
     func restoreOriginalConfiguration() {
         guard !hardwareProfileBusy else { return }
-        guard let installedProfile = profileRegistry.profile(id: configuration.hardwareProfileID),
+        guard let currentProfileID = currentDevice?.profileID,
+              let installedState = configuration.hardwareProfileState(for: currentProfileID),
+              installedState.installed,
+              let installedProfile = profileRegistry.profile(id: currentProfileID),
               let controller = KeyboardDriverRegistry.keymapDriver(for: installedProfile) else {
             lastMessage = "找不到已安装专用层对应的安全恢复驱动，未执行任何硬件写入"
             return
@@ -439,7 +500,7 @@ final class BridgeStore: ObservableObject {
         guard let selected = configurationStore.loadOriginalKeymapBackup(
             profileID: controller.profileID,
             expectedByteCount: controller.keymapSize,
-            preferredName: configuration.hardwareProfileBackupName,
+            preferredName: installedState.backupName,
             isPlausibleKeymap: controller.isPlausibleKeymap,
             isBridgeProfile: { controller.containsBridgeProfile($0) }
         ), let bytes = selected.backup.bytes else {
@@ -455,11 +516,11 @@ final class BridgeStore: ObservableObject {
                 configuration.codexModeEnabled = false
                 configuration.mappingPausedByUser = true
                 configuration.mappingMode = .unavailable
-                configuration.hardwareProfileInstalled = false
-                configuration.hardwareProfileID = nil
-                configuration.keyBindings = BridgeConfiguration.bindingsForOriginalHardwareProfile(
-                    configuration.keyBindings
+                let originalBindings = BridgeConfiguration.bindingsForOriginalHardwareProfile(
+                    configuration.bindings(for: controller.profileID)
                 )
+                configuration.setHardwareProfileState(nil, for: controller.profileID)
+                configuration.setBindings(originalBindings, for: controller.profileID)
                 persistConfiguration()
                 hardwareProfileMessage = "\(usbDevice.modelName ?? usbDevice.productName) 原始键位表已恢复并回读确认"
                 lastMessage = "\(hardwareProfileMessage)；现在可以拔掉数据线"
@@ -592,11 +653,11 @@ final class BridgeStore: ObservableObject {
     }
 
     func beginLearningBinding(_ index: Int) {
-        guard configuration.keyBindings.indices.contains(index) else { return }
+        guard activeKeyBindings.indices.contains(index) else { return }
         learningBindingIndex = index
         pendingLearningEvent = nil
         deviceManager.calibrationMode = true
-        lastMessage = "正在学习“\(configuration.keyBindings[index].action.displayName)”：请按一下要使用的实体键"
+        lastMessage = "正在学习“\(activeKeyBindings[index].action.displayName)”：请按一下要使用的实体键"
     }
 
     func cancelLearningBinding() {
@@ -607,20 +668,21 @@ final class BridgeStore: ObservableObject {
     }
 
     func resetBindingsToPhysicalFunctionKeys() {
-        configuration.keyBindings = configuration.hardwareProfileInstalled == true
+        let defaults = installedHardwareProfileIsCurrent
             ? BridgeConfiguration.hardwareProfileBindings : BridgeConfiguration.defaultBindings
+        configuration.setBindings(defaults, for: currentDevice?.profileID)
         learningBindingIndex = nil
         pendingLearningEvent = nil
         deviceManager.calibrationMode = false
         persistConfiguration()
-        lastMessage = "已恢复为实体 F1–F12 默认映射"
+        lastMessage = "\(currentModelName) 已恢复为实体 F1–F12 默认映射"
         lastAgentSignalLights = nil
         if lightingAvailable { syncAgentLighting() }
     }
 
     private func consumeLearningEvent(_ event: HIDEvent) -> Bool {
         guard let index = learningBindingIndex,
-              configuration.keyBindings.indices.contains(index) else { return false }
+              activeKeyBindings.indices.contains(index) else { return false }
         guard event.usagePage == 0x07 else {
             if event.value != 0 {
                 lastMessage = "媒体键无法可靠隔离系统功能；请选择数字、字母、F 区或导航键"
@@ -643,7 +705,7 @@ final class BridgeStore: ObservableObject {
             normalizedEvent.usage = normalizedUsage
             normalizedEvent.value = 1
             pendingLearningEvent = normalizedEvent
-            lastMessage = "已识别 \(KeyBinding(usagePage: event.usagePage, usage: normalizedUsage, action: configuration.keyBindings[index].action).displayName)，松开按键即可保存"
+            lastMessage = "已识别 \(KeyBinding(usagePage: event.usagePage, usage: normalizedUsage, action: activeKeyBindings[index].action).displayName)，松开按键即可保存"
             return true
         }
         guard let learnedEvent = pendingLearningEvent else { return true }
@@ -654,23 +716,26 @@ final class BridgeStore: ObservableObject {
                 && learnedEvent.usage == event.usage
         ) else { return true }
 
-        let previous = configuration.keyBindings[index]
-        if let duplicate = configuration.keyBindings.indices.first(where: {
-            $0 != index && configuration.keyBindings[$0].usagePage == learnedEvent.usagePage
-                && configuration.keyBindings[$0].usage == learnedEvent.usage
+        var bindings = activeKeyBindings
+        let previous = bindings[index]
+        if let duplicate = bindings.indices.first(where: {
+            $0 != index && bindings[$0].usagePage == learnedEvent.usagePage
+                && bindings[$0].usage == learnedEvent.usage
         }) {
-            configuration.keyBindings[duplicate].usagePage = previous.usagePage
-            configuration.keyBindings[duplicate].usage = previous.usage
-            configuration.keyBindings[duplicate].signalLightIndex = previous.signalLightIndex
+            bindings[duplicate].usagePage = previous.usagePage
+            bindings[duplicate].usage = previous.usage
+            bindings[duplicate].signalLightIndex = previous.signalLightIndex
         }
-        configuration.keyBindings[index].usagePage = learnedEvent.usagePage
-        configuration.keyBindings[index].usage = learnedEvent.usage
-        configuration.keyBindings[index].signalLightIndex = SignalLightLayout.index(
+        bindings[index].usagePage = learnedEvent.usagePage
+        bindings[index].usage = learnedEvent.usage
+        bindings[index].signalLightIndex = SignalLightLayout.index(
             layoutID: currentSignalLightLayoutID,
             usagePage: learnedEvent.usagePage,
             usage: learnedEvent.usage
         )
-        let learnedName = configuration.keyBindings[index].displayName
+        let learnedName = bindings[index].displayName
+        let actionName = bindings[index].action.displayName
+        configuration.setBindings(bindings, for: currentDevice?.profileID)
         learningBindingIndex = nil
         pendingLearningEvent = nil
         deviceManager.calibrationMode = false
@@ -678,8 +743,8 @@ final class BridgeStore: ObservableObject {
         lastAgentSignalLights = nil
         failedAgentSignalLights = nil
         if lightingAvailable { syncAgentLighting() }
-        lastMessage = "已学习 \(learnedName) → \(configuration.keyBindings[index].action.displayName)"
-        showOverlay("按键已学习", detail: "\(learnedName) → \(configuration.keyBindings[index].action.displayName)")
+        lastMessage = "已学习 \(learnedName) → \(actionName)"
+        showOverlay("按键已学习", detail: "\(learnedName) → \(actionName)")
         return true
     }
 
@@ -708,7 +773,8 @@ final class BridgeStore: ObservableObject {
         Task {
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
-                    // D5 is the capability required for lighting. Some U1
+                    // D5 is the capability required to discover a usable
+                    // lighting channel. Some U1
                     // firmware versions do not forward management commands
                     // such as A1 firmware info or F3 sleep configuration;
                     // those optional reads must not disable working D5/D6 RGB.
@@ -726,7 +792,9 @@ final class BridgeStore: ObservableObject {
                 lightingStates = result.1
                 sleepConfiguration = result.2
                 lightingAvailable = true
-                lightingMessage = "\(connection.displayName) 灯光通道已就绪"
+                lightingMessage = controller.supportsFullLightingControl
+                    ? "\(connection.displayName) 灯光通道已就绪"
+                    : "\(connection.displayName) Agent 单键状态灯通道已就绪"
                 configuration.lighting.usbDynamic = .verified
                 configuration.lighting.usbSingleKey = .unavailable
                 configuration.lighting.bluetoothDynamic = .blocked
@@ -763,6 +831,112 @@ final class BridgeStore: ObservableObject {
         }
     }
 
+    /// A user may keep an Air keyboard paired over Bluetooth while plugging in
+    /// a different NuPhy model. The interface that actually produced activity
+    /// is therefore more authoritative than a fixed transport preference.
+    private func noteActiveDevice(for interface: HIDInterfaceSnapshot) {
+        guard let device = devices.first(where: { snapshot in
+            snapshot.isRecognized && snapshot.interfaces.contains(where: { $0.id == interface.id })
+        }) else { return }
+        guard activeDeviceID != device.id else { return }
+        activeDeviceID = device.id
+        syncActiveInputConfiguration()
+        publishDeviceDiagnostics()
+        inspectCurrentKeyboardIfNeeded()
+    }
+
+    private func publishDeviceDiagnostics() {
+        let defaults = UserDefaults.standard
+        guard let device = currentDevice else {
+            ["ConnectedModelName", "ConnectedProfileID", "ConnectedProductName",
+             "ConnectedUSBIdentity", "ActiveKeyBindings"].forEach(defaults.removeObject(forKey:))
+            return
+        }
+        defaults.set(device.modelName ?? device.productName, forKey: "ConnectedModelName")
+        defaults.set(device.profileID, forKey: "ConnectedProfileID")
+        defaults.set(device.productName, forKey: "ConnectedProductName")
+        if let interface = device.interfaces.first(where: { $0.transport == .usb })
+            ?? device.interfaces.first {
+            defaults.set(
+                String(format: "0x%04X:0x%04X", interface.vendorID, interface.productID),
+                forKey: "ConnectedUSBIdentity"
+            )
+        }
+        defaults.set(
+            activeKeyBindings.map { "\($0.action.rawValue)=\($0.displayName)" }.joined(separator: ", "),
+            forKey: "ActiveKeyBindings"
+        )
+    }
+
+    /// Discover a new model's exact S4 matrix before any hardware profile is
+    /// designed. Kick75 inspection is read-only and produces a verified local
+    /// backup that can later support a narrow, reversible F-row/knob writer.
+    private func inspectCurrentKeyboardIfNeeded() {
+        guard let device = currentDevice,
+              device.profileID == "nuphy.kick75",
+              let interface = device.interfaces.first(where: {
+                  $0.transport == .usb && $0.productID == 0x1026
+              }),
+              !readOnlyInspectedDeviceIDs.contains(device.id) else { return }
+        readOnlyInspectedDeviceIDs.insert(device.id)
+        let fingerprint = device.fingerprint
+        let deviceID = device.id
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let snapshot = try await Task.detached(priority: .userInitiated) {
+                    try NuPhyS4ReadOnlyKeymapInspector(productID: interface.productID).readSnapshot()
+                }.value
+                guard self.currentDevice?.id == deviceID else { return }
+                let geometry = snapshot.geometry
+                let encoded = Data(snapshot.bytes).base64EncodedString()
+                let checksum = FNV1a.hash(encoded)
+                let defaults = UserDefaults.standard
+                defaults.set(
+                    "mode=\(geometry.currentMode) layers=\(geometry.layerCount) "
+                        + "perMode=\(geometry.layersPerMode) matrix=\(geometry.rows)x\(geometry.columns) "
+                        + "extra=\(geometry.extraKeyCount) bytes=\(snapshot.bytes.count)",
+                    forKey: "Kick75S4Geometry"
+                )
+                defaults.set(checksum, forKey: "Kick75KeymapChecksum")
+                if defaults.string(forKey: "Kick75BackedUpChecksum") != checksum {
+                    let backupURL = try self.configurationStore.createKeymapBackup(
+                        data: snapshot.bytes,
+                        note: "Kick75 适配前通过只读 S4 GetBase/GetUseKeys 读取的完整当前键位表。",
+                        profileID: "nuphy.kick75",
+                        deviceFingerprint: fingerprint
+                    )
+                    defaults.set(checksum, forKey: "Kick75BackedUpChecksum")
+                    defaults.set(backupURL.lastPathComponent, forKey: "Kick75KeymapBackupName")
+                }
+                let baseLayers = stride(
+                    from: 0,
+                    to: geometry.layerCount,
+                    by: max(1, geometry.layersPerMode)
+                )
+                let diagnostic = baseLayers.map { layer in
+                    let functionEntries = (0..<geometry.entriesPerLayer).compactMap { entry -> String? in
+                        guard let code = snapshot.keycode(layer: layer, entry: entry),
+                              (0x003A...0x0045).contains(code) else { return nil }
+                        return "\(entry):\(String(format: "%04X", code))"
+                    }
+                    let extras = (geometry.rows * geometry.columns..<geometry.entriesPerLayer)
+                        .compactMap { entry -> String? in
+                            guard let code = snapshot.keycode(layer: layer, entry: entry) else { return nil }
+                            return "\(entry):\(String(format: "%04X", code))"
+                        }
+                    return "L\(layer) F=[\(functionEntries.joined(separator: ","))] "
+                        + "extra=[\(extras.joined(separator: ","))]"
+                }.joined(separator: " | ")
+                defaults.set(diagnostic, forKey: "Kick75KeymapDiagnostic")
+                defaults.set("只读矩阵与完整键位表已回读", forKey: "Kick75ProtocolStatus")
+            } catch {
+                UserDefaults.standard.set(error.localizedDescription, forKey: "Kick75ProtocolStatus")
+                self.readOnlyInspectedDeviceIDs.remove(deviceID)
+            }
+        }
+    }
+
     /// USB-C and the U1 receiver share the same serial number and can both be
     /// present while the keyboard is in 2.4G mode. The input interface that
     /// emitted this event is the reliable indication of the active path.
@@ -770,6 +944,8 @@ final class BridgeStore: ObservableObject {
         let connection: KeyboardLightingConnection
         switch interface.productID {
         case Air75V3LightingController.productID:
+            connection = .usbCable
+        case Kick75KeymapController.productID:
             connection = .usbCable
         case Air75V3LightingController.dongleProductID:
             connection = .twoPointFourGHzReceiver
@@ -970,6 +1146,10 @@ final class BridgeStore: ObservableObject {
             lightingMessage = "当前键盘尚无经过实机验证的灯光驱动"
             return
         }
+        guard controller.supportsFullLightingControl else {
+            lightingMessage = "当前型号仅启用已验证的 Agent 单键状态灯；普通灯效保持键盘原设置"
+            return
+        }
         let saved = originalLightingStates
             ?? configurationStore.loadLatestLightingBackup(profileID: controller.profileID)?.states
         guard let saved else {
@@ -1004,6 +1184,11 @@ final class BridgeStore: ObservableObject {
             lightingMessage = "当前键盘尚无经过实机验证的灯光驱动"
             return
         }
+        guard controller.supportsFullLightingControl else {
+            lightingMessage = "当前型号仅启用已验证的 Agent 单键状态灯；普通背光和侧灯不会被改动"
+            completion?(false, nil)
+            return
+        }
         lightingBusy = true
         lightingMessage = "正在写入并读回验证…"
         Task {
@@ -1036,9 +1221,22 @@ final class BridgeStore: ObservableObject {
                 lightingMessage = "\(label)；键盘已回读确认"
                 succeeded = true
             } catch {
-                lightingAvailable = false
+                let writeError = error
                 lightingConnection = controller.detectedConnection()
-                lightingMessage = "灯光设置失败：\(error.localizedDescription)"
+                do {
+                    // A rejected setting is not the same as a lost HID
+                    // channel. The controller has already attempted rollback;
+                    // re-read it so one failed selection does not grey out all
+                    // lighting controls until the next application restart.
+                    lightingStates = try await Task.detached(priority: .userInitiated) {
+                        try controller.readStates()
+                    }.value
+                    lightingAvailable = true
+                    lightingMessage = "灯光设置未生效：\(writeError.localizedDescription)；当前设置已重新读取"
+                } catch {
+                    lightingAvailable = false
+                    lightingMessage = "灯光设置失败：\(writeError.localizedDescription)"
+                }
             }
             lightingBusy = false
             completion?(succeeded, beforeStates)
@@ -1057,6 +1255,12 @@ final class BridgeStore: ObservableObject {
 
     private func restoreLegacyAgentSidelight() {
         guard !lightingBusy, let controller = currentLightingDriver else { return }
+        guard controller.supportsFullLightingControl else {
+            configuration.sidelightRestoredAfterSignalLights = true
+            persistConfiguration()
+            syncAgentSignalLights()
+            return
+        }
         guard let original = configurationStore.loadOriginalLightingBackup(
             profileID: controller.profileID
         ) else {
@@ -1091,7 +1295,7 @@ final class BridgeStore: ObservableObject {
         var desiredByIndex: [UInt8: Air75SignalLight] = [:]
         let off = Air75RGBColor(red: 0, green: 0, blue: 0)
         let activeIndices = Set(actions.compactMap { action -> UInt8? in
-            guard let value = configuration.keyBindings.first(where: { $0.action == action })?.signalLightIndex,
+            guard let value = activeKeyBindings.first(where: { $0.action == action })?.signalLightIndex,
                   (0...255).contains(value) else { return nil }
             return UInt8(value)
         })
@@ -1099,7 +1303,7 @@ final class BridgeStore: ObservableObject {
             .subtracting(activeIndices)
         for index in indicesToClear { desiredByIndex[index] = Air75SignalLight(index: index, color: off) }
         for (taskIndex, action) in actions.enumerated() {
-            guard let value = configuration.keyBindings.first(where: { $0.action == action })?.signalLightIndex,
+            guard let value = activeKeyBindings.first(where: { $0.action == action })?.signalLightIndex,
                   (0...255).contains(value) else { continue }
             let index = UInt8(value)
             let snapshot = codexTasks.indices.contains(taskIndex) ? codexTasks[taskIndex] : .unassigned
@@ -1313,8 +1517,9 @@ final class BridgeStore: ObservableObject {
     }
 
     func persistConfiguration() {
-        mappingEngine.configuration = configuration
+        syncActiveInputConfiguration()
         deviceManager.configuration = configuration
+        deviceManager.updateRuntimeKeyBindings(activeKeyBindings)
         syncDedicatedEventSuppression()
         do { try configurationStore.save(configuration) }
         catch { lastMessage = "保存配置失败：\(error.localizedDescription)" }
@@ -1327,9 +1532,17 @@ final class BridgeStore: ObservableObject {
             && accessibilityGranted
         dedicatedEventSuppressionActive = dedicatedKeyEventSuppressor.setEnabled(
             shouldRun,
-            keyBindings: configuration.keyBindings
+            keyBindings: activeKeyBindings
         )
         UserDefaults.standard.set(dedicatedEventSuppressionActive, forKey: "DedicatedEventSuppressionActive")
+    }
+
+    private func syncActiveInputConfiguration() {
+        var runtime = configuration
+        runtime.keyBindings = activeKeyBindings
+        mappingEngine.configuration = runtime
+        deviceManager.updateRuntimeKeyBindings(runtime.keyBindings)
+        syncDedicatedEventSuppression()
     }
 
     private func perform(_ action: BridgeAction, event: HIDEvent, phase: KeyPhase) {

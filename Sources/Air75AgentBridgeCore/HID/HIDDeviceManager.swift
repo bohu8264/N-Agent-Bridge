@@ -26,10 +26,12 @@ public final class HIDDeviceManager: ObservableObject, KeyboardDeviceProvider, K
     private let lock = NSLock()
     private var recognizedDevicePointers = Set<UInt>()
     private var interfaceCache: [UInt: HIDInterfaceSnapshot] = [:]
+    private var runtimeKeyBindings: [KeyBinding]
 
     public init(configuration: BridgeConfiguration = BridgeConfiguration(), profile: DeviceProfile? = nil,
                 registry: DeviceProfileRegistry? = nil) {
         self.configuration = configuration
+        runtimeKeyBindings = configuration.keyBindings
         if let registry {
             profileRegistry = registry
         } else if let profile {
@@ -105,6 +107,14 @@ public final class HIDDeviceManager: ObservableObject, KeyboardDeviceProvider, K
 
     public func clearEvents() {
         DispatchQueue.main.async { self.recentEvents.removeAll() }
+    }
+
+    /// Updates only the usages accepted by the input listener. Recognition is
+    /// not restarted when the user swaps between two already-known models.
+    public func updateRuntimeKeyBindings(_ bindings: [KeyBinding]) {
+        lock.lock()
+        runtimeKeyBindings = bindings
+        lock.unlock()
     }
 
     public static func enumerateAllInterfaces() -> [HIDInterfaceSnapshot] {
@@ -234,7 +244,10 @@ public final class HIDDeviceManager: ObservableObject, KeyboardDeviceProvider, K
 
     private func shouldPublish(page: Int, usage: Int, value: Int) -> Bool {
         if calibrationMode { return true }
-        if configuration.keyBindings.contains(where: {
+        lock.lock()
+        let bindings = runtimeKeyBindings
+        lock.unlock()
+        if bindings.contains(where: {
             $0.isSupportedInputSource && $0.usagePage == page && $0.usage == usage
         }) { return true }
         if page >= 0xFF00 { return true }
