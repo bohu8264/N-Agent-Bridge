@@ -157,9 +157,15 @@ final class CodexDesktopStatusObserver: @unchecked Sendable {
                     for: threadIndexReader.rolloutURL(for: entry),
                     fallbackThreadID: entry.threadID
                 )
-                var snapshot = unreadThreadIDs.contains(entry.threadID)
-                    ? raw
-                    : CodexRolloutStatusParser.applyDecay(to: raw, now: now)
+                let isUnread = unreadThreadIDs.contains(entry.threadID)
+                // Unread completion may stay green, but unread must never
+                // bypass stale-reasoning cleanup. Otherwise an interrupted
+                // historical task remains blue forever on a fresh install.
+                var snapshot = CodexRolloutStatusParser.applyDecay(
+                    to: raw,
+                    now: now,
+                    preserveUnreadCompletion: isUnread
+                )
                 snapshot.threadID = entry.threadID
                 snapshot.title = CodexSidebarTitleIndex.preferredTitle(
                     for: entry.threadID,

@@ -369,6 +369,15 @@ let kick75D6Validate = CommandLine.arguments.contains("--kick75-d6-validate")
 let kick75SidelightLatency = CommandLine.arguments.contains("--kick75-sidelight-latency")
 let kick75SleepValidate = CommandLine.arguments.contains("--kick75-sleep-validate")
 let kick75QSignalValidate = CommandLine.arguments.contains("--kick75-q-signal-validate")
+let node100CapabilityRead = CommandLine.arguments.contains("--node100-capability-read")
+let node100KeymapDryRun = CommandLine.arguments.contains("--node100-keymap-dry-run")
+let node100KeymapValidate = CommandLine.arguments.contains("--node100-keymap-validate")
+let node100InstallBridgeProfile = CommandLine.arguments.contains("--node100-install-bridge-profile")
+let node100D6Noop = CommandLine.arguments.contains("--node100-d6-noop")
+let node100D6Validate = CommandLine.arguments.contains("--node100-d6-validate")
+let node100D8Validate = CommandLine.arguments.contains("--node100-d8-validate")
+let node100QSignalValidate = CommandLine.arguments.contains("--node100-q-signal-validate")
+let node100SleepValidate = CommandLine.arguments.contains("--node100-sleep-validate")
 let keymapDryRun = CommandLine.arguments.contains("--keymap-dry-run")
 let s4KeymapRead = CommandLine.arguments.contains("--s4-keymap-read")
 let installBridgeProfile = CommandLine.arguments.contains("--install-bridge-profile")
@@ -377,6 +386,509 @@ let explicitPayload = text(after: "--payload-hex").map { value in
 }
 
 do {
+    if node100SleepValidate {
+        guard targetProductID == Node100LPANSIKeymapController.productID else {
+            throw ProbeError.verificationFailed(
+                "--node100-sleep-validate requires --product-id 0x1037"
+            )
+        }
+        let probe = ProtocolProbe(targetProductID: targetProductID)
+        let original = try kick75ReadSleepConfiguration(probe)
+        let backupURL = try ConfigurationStore().createSleepBackup(
+            configuration: original,
+            note: "Node100 LP ANSI F3/F5 休眠设置验证前读取的完整三字节原始配置。",
+            profileID: "nuphy.node100-lp-ansi",
+            deviceFingerprint: nil
+        )
+        print("backup: \(backupURL.path)")
+        print("original: \(hexBytes(original.raw))")
+
+        var needsEmergencyRestore = true
+        defer {
+            if needsEmergencyRestore {
+                do {
+                    _ = try kick75WriteSleepConfiguration(probe, desired: original)
+                    fputs("EMERGENCY RESTORE: verified\n", stderr)
+                } catch {
+                    fputs("EMERGENCY RESTORE FAILED: \(error.localizedDescription)\n", stderr)
+                }
+            }
+        }
+        _ = try kick75WriteSleepConfiguration(probe, desired: original)
+        print("F5 no-op ACK + F3 exact readback verified")
+        let alwaysOn = try original.settingAutoSleep(afterMinutes: nil)
+        _ = try kick75WriteSleepConfiguration(probe, desired: alwaysOn)
+        print("temporary always-on: \(hexBytes(alwaysOn.raw)); exact readback verified")
+        _ = try kick75WriteSleepConfiguration(probe, desired: original)
+        let final = try kick75ReadSleepConfiguration(probe)
+        guard final == original else {
+            throw ProbeError.verificationFailed("Node100 final sleep restore mismatch")
+        }
+        needsEmergencyRestore = false
+        print("Node100 F3/F5 validation PASS; final restore: \(hexBytes(final.raw))")
+        exit(0)
+    }
+
+    if node100D8Validate || node100QSignalValidate {
+        guard targetProductID == Node100LPANSIKeymapController.productID else {
+            throw ProbeError.verificationFailed(
+                "--node100-d8-validate requires --product-id 0x1037"
+            )
+        }
+        let probe = ProtocolProbe(targetProductID: targetProductID)
+        let targetIndex: UInt8 = node100QSignalValidate ? 44 : 1
+        let indexes = node100QSignalValidate ? [targetIndex] : (0...6).map(UInt8.init)
+        let originals = try indexes.map { try kick75ReadSignalLight(probe, index: $0) }
+        let backupDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Application Support/Air75AgentBridge/Backups",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: backupDirectory,
+            withIntermediateDirectories: true
+        )
+        let stamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let backupURL = backupDirectory.appendingPathComponent(
+            "\(stamp)-node100-led\(targetIndex)-signal-light.json"
+        )
+        let backupObject: [String: Any] = [
+            "schemaVersion": 1,
+            "profileID": "nuphy.node100-lp-ansi",
+            "lights": originals.map { light in
+                [
+                    "index": Int(light.index),
+                    "red": Int(light.color.red),
+                    "green": Int(light.color.green),
+                    "blue": Int(light.color.blue),
+                ]
+            },
+            "note": "Node100 LP ANSI D8/D2 验证前的目标 LED 原色。",
+        ]
+        let backupData = try JSONSerialization.data(
+            withJSONObject: backupObject,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        try backupData.write(to: backupURL, options: [.atomic, .completeFileProtection])
+        guard try Data(contentsOf: backupURL) == backupData else {
+            throw ProbeError.verificationFailed("Node100 signal-light backup readback failed")
+        }
+        print("backup: \(backupURL.path)")
+        print(
+            "original LED sample: "
+                + originals.map {
+                    "\($0.index)=\(hexBytes([$0.color.red, $0.color.green, $0.color.blue]))"
+                }.joined(separator: " | ")
+        )
+
+        guard let originalTarget = originals.first(where: { $0.index == targetIndex }) else {
+            throw ProbeError.verificationFailed("Node100 target signal light was not read")
+        }
+        let testColor = Air75RGBColor(red: 0x16, green: 0x8B, blue: 0xFF)
+        let testLight = Air75SignalLight(index: targetIndex, color: testColor)
+        var needsEmergencyRestore = true
+        defer {
+            if needsEmergencyRestore {
+                do {
+                    _ = try kick75WriteSignalLight(probe, light: originalTarget)
+                    fputs("EMERGENCY RESTORE: verified\n", stderr)
+                } catch {
+                    fputs("EMERGENCY RESTORE FAILED: \(error.localizedDescription)\n", stderr)
+                }
+            }
+        }
+        _ = try kick75WriteSignalLight(probe, light: testLight)
+        Thread.sleep(forTimeInterval: 1.0)
+        _ = try kick75WriteSignalLight(probe, light: originalTarget)
+        let restored = try kick75ReadSignalLight(probe, index: targetIndex)
+        guard restored == originalTarget else {
+            throw ProbeError.verificationFailed(
+                "Node100 LED index \(targetIndex) final restore mismatch"
+            )
+        }
+        needsEmergencyRestore = false
+        print(
+            "Node100 D8 index \(targetIndex) ACK + D2 readback PASS; original color restored"
+        )
+        exit(0)
+    }
+
+    if node100D6Validate {
+        guard targetProductID == Node100LPANSIKeymapController.productID else {
+            throw ProbeError.verificationFailed(
+                "--node100-d6-validate requires --product-id 0x1037"
+            )
+        }
+        let probe = ProtocolProbe(targetProductID: targetProductID)
+        let original0 = try kick75ReadState(probe, handle: 0)
+        let original1 = try kick75ReadState(probe, handle: 1)
+        let parsedStates = try [
+            Air75LightingState(handle: 0, raw: original0),
+            Air75LightingState(handle: 1, raw: original1),
+        ]
+        let backupURL = try ConfigurationStore().createLightingBackup(
+            states: parsedStates,
+            note: "Node100 LP ANSI D6 字段逐项验证前读取的完整双 handle 灯光状态。",
+            profileID: "nuphy.node100-lp-ansi",
+            deviceFingerprint: nil
+        )
+        print("backup: \(backupURL.path)")
+        print("original h0: \(hexBytes(original0))")
+        print("original h1: \(hexBytes(original1))")
+
+        var needsEmergencyRestore = true
+        defer {
+            if needsEmergencyRestore {
+                do {
+                    _ = try kick75WriteState(probe, handle: 0, desired: original0)
+                    fputs("EMERGENCY RESTORE: verified\n", stderr)
+                } catch {
+                    fputs("EMERGENCY RESTORE FAILED: \(error.localizedDescription)\n", stderr)
+                }
+            }
+        }
+
+        func runTest(
+            _ name: String,
+            toleratedDeltas: [Int: Int] = [:],
+            mutate: (inout [UInt8]) -> Void
+        ) throws {
+            var desired = original0
+            mutate(&desired)
+            let verified = try kick75WriteState(
+                probe,
+                handle: 0,
+                desired: desired,
+                toleratedDeltas: toleratedDeltas
+            )
+            print("\(name): verified \(hexBytes(verified))")
+            _ = try kick75WriteState(probe, handle: 0, desired: original0)
+            let restored0 = try kick75ReadState(probe, handle: 0)
+            let untouched1 = try kick75ReadState(probe, handle: 1)
+            guard restored0 == original0, untouched1 == original1 else {
+                throw ProbeError.verificationFailed(
+                    "Node100 \(name) restore changed a lighting profile"
+                )
+            }
+            print("\(name): exact restore; handle 1 untouched")
+            Thread.sleep(forTimeInterval: 0.35)
+        }
+
+        try runTest("backlight mode byte 0") { raw in
+            raw[0] = UInt8(Air75BacklightMode.staticColor.rawValue)
+        }
+        try runTest("backlight breathing mode byte 0") { raw in
+            raw[0] = UInt8(Air75BacklightMode.breathing.rawValue)
+        }
+        try runTest(
+            "backlight static RGB bytes 0,4...8",
+            toleratedDeltas: [6: 1, 7: 1, 8: 1]
+        ) { raw in
+            raw[0] = UInt8(Air75BacklightMode.staticColor.rawValue)
+            raw[4] = 0
+            raw[5] = 0
+            raw[6] = 0x16
+            raw[7] = 0x8B
+            raw[8] = 0xFF
+        }
+        try runTest("secondary-zone mode byte 9") { raw in
+            raw[9] = UInt8(Air75SidelightMode.staticColor.rawValue)
+        }
+        try runTest(
+            "secondary-zone static RGB bytes 9,12...16",
+            toleratedDeltas: [14: 1, 15: 1, 16: 1]
+        ) { raw in
+            raw[9] = UInt8(Air75SidelightMode.staticColor.rawValue)
+            raw[12] = 0
+            raw[13] = 0
+            raw[14] = 0xFF
+            raw[15] = 0x9F
+            raw[16] = 0x0A
+        }
+
+        let final0 = try kick75ReadState(probe, handle: 0)
+        let final1 = try kick75ReadState(probe, handle: 1)
+        guard final0 == original0, final1 == original1 else {
+            throw ProbeError.verificationFailed("Node100 final dual-handle restore mismatch")
+        }
+        needsEmergencyRestore = false
+        print("Node100 D6 validation PASS: both zones, RGB, and exact restore")
+        exit(0)
+    }
+
+    if node100D6Noop {
+        guard targetProductID == Node100LPANSIKeymapController.productID else {
+            throw ProbeError.verificationFailed(
+                "--node100-d6-noop requires --product-id 0x1037"
+            )
+        }
+        let probe = ProtocolProbe(targetProductID: targetProductID)
+        let original0 = try kick75ReadState(probe, handle: 0)
+        let original1 = try kick75ReadState(probe, handle: 1)
+        let parsedStates = try [
+            Air75LightingState(handle: 0, raw: original0),
+            Air75LightingState(handle: 1, raw: original1),
+        ]
+        let backupURL = try ConfigurationStore().createLightingBackup(
+            states: parsedStates,
+            note: "Node100 LP ANSI 首次 D6 no-op 验证前读取的两组完整 17-byte 灯光状态。",
+            profileID: "nuphy.node100-lp-ansi",
+            deviceFingerprint: nil
+        )
+        print("backup: \(backupURL.path)")
+        print("original h0: \(hexBytes(original0))")
+        print("original h1: \(hexBytes(original1))")
+
+        var needsEmergencyRestore = true
+        defer {
+            if needsEmergencyRestore {
+                do {
+                    _ = try kick75WriteState(probe, handle: 0, desired: original0)
+                    fputs("EMERGENCY RESTORE: verified\n", stderr)
+                } catch {
+                    fputs("EMERGENCY RESTORE FAILED: \(error.localizedDescription)\n", stderr)
+                }
+            }
+        }
+        _ = try kick75WriteState(probe, handle: 0, desired: original0)
+        let final0 = try kick75ReadState(probe, handle: 0)
+        let final1 = try kick75ReadState(probe, handle: 1)
+        guard final0 == original0, final1 == original1 else {
+            throw ProbeError.verificationFailed(
+                "Node100 D6 no-op changed a lighting profile unexpectedly"
+            )
+        }
+        needsEmergencyRestore = false
+        print("Node100 D6 handle 0 no-op PASS; handle 1 remained byte-for-byte unchanged")
+        exit(0)
+    }
+
+    if node100KeymapDryRun || node100KeymapValidate || node100InstallBridgeProfile {
+        guard targetProductID == Node100LPANSIKeymapController.productID else {
+            throw ProbeError.verificationFailed(
+                "Node100 keymap validation requires --product-id 0x1037"
+            )
+        }
+        let controller = Node100LPANSIKeymapController()
+        let original = try controller.readKeymap()
+        guard Node100LPANSIKeymapController.isPlausibleKeymap(original) else {
+            throw ProbeError.verificationFailed("Node100 keymap failed strict layout validation")
+        }
+        let candidate = try controller.makeBridgeProfile(from: original)
+        let changedByteOffsets = original.indices.filter { original[$0] != candidate[$0] }
+        let entriesPerLayer = 119
+        var permittedEntries = Set<Int>()
+        for layer in [0, 4] {
+            for physicalIndex in 1...12 {
+                permittedEntries.insert(layer * entriesPerLayer + physicalIndex)
+            }
+            for touchEntry in [115, 117, 118] {
+                permittedEntries.insert(layer * entriesPerLayer + touchEntry)
+            }
+        }
+        guard changedByteOffsets.allSatisfy({ permittedEntries.contains($0 / 2) }) else {
+            throw ProbeError.verificationFailed(
+                "Node100 transform changed an unverified matrix entry"
+            )
+        }
+        print("Node100 keymap: \(original.count) bytes")
+        print("strict transform delta: \(changedByteOffsets.count) bytes")
+        print("changed entries are limited to base-layer F1-F12 and touch mute/down/up")
+        if node100KeymapDryRun {
+            print("dry run complete; keyboard was not modified")
+            exit(0)
+        }
+
+        if node100InstallBridgeProfile {
+            let profileID = "nuphy.node100-lp-ansi"
+            let store = ConfigurationStore()
+            var configuration = store.load()
+            let existingState = configuration.hardwareProfileState(for: profileID)
+            let backupURL: URL
+            if Node100LPANSIKeymapController.hasBridgeProfile(original) {
+                guard let recovered = store.loadOriginalKeymapBackup(
+                    profileID: profileID,
+                    expectedByteCount: Node100LPANSIKeymapController.keymapByteCount,
+                    preferredName: existingState?.backupName,
+                    isPlausibleKeymap: Node100LPANSIKeymapController.isPlausibleKeymap,
+                    isBridgeProfile: Node100LPANSIKeymapController.hasBridgeProfile
+                ) else { throw Air75KeymapError.originalBackupNotFound }
+                backupURL = recovered.url
+            } else {
+                backupURL = try store.createKeymapBackup(
+                    data: original,
+                    note: "Node100 LP ANSI 正式写入专用层前逐字节读取的完整 1904-byte 原始键位表。",
+                    profileID: profileID,
+                    deviceFingerprint: nil
+                )
+            }
+            let originalBindings = configuration.bindings(for: profileID)
+            let installed = try controller.installBridgeProfile(expectedOriginal: original)
+            var installedBindings = BridgeConfiguration.bindingsForInstalledHardwareProfile(
+                originalBindings
+            )
+            for index in installedBindings.indices {
+                installedBindings[index].signalLightIndex = SignalLightLayout.index(
+                    layoutID: "nuphy.node100-lp-ansi-d8",
+                    usagePage: installedBindings[index].usagePage,
+                    usage: installedBindings[index].usage
+                )
+            }
+            configuration.mappingMode = .hardwareProfile
+            configuration.enabled = true
+            configuration.codexModeEnabled = true
+            configuration.mappingPausedByUser = false
+            configuration.setHardwareProfileState(
+                InstalledHardwareProfileState(
+                    installed: true,
+                    backupName: backupURL.lastPathComponent,
+                    boundFingerprint: nil
+                ),
+                for: profileID
+            )
+            configuration.setBindings(installedBindings, for: profileID)
+            try store.save(configuration)
+            let keybindingResult = try CodexKeybindingInstaller().install()
+            print("backup: \(backupURL.path)")
+            print(
+                "written chunks: "
+                    + installed.changedChunkAddresses.map(String.init).joined(separator: ", ")
+            )
+            print("install: full 1904-byte readback verified")
+            print("Codex relay: \(keybindingResult.changed ? "installed" : "already verified")")
+            exit(0)
+        }
+
+        let backupURL = try ConfigurationStore().createKeymapBackup(
+            data: original,
+            note: "Node100 LP ANSI 临时安装/恢复验证前逐字节读取的完整 1904-byte 原始键位表。",
+            profileID: "nuphy.node100-lp-ansi",
+            deviceFingerprint: nil
+        )
+        print("backup: \(backupURL.path)")
+
+        var needsEmergencyRestore = true
+        defer {
+            if needsEmergencyRestore {
+                do {
+                    _ = try controller.restore(original)
+                    fputs("EMERGENCY RESTORE: verified\n", stderr)
+                } catch {
+                    fputs("EMERGENCY RESTORE FAILED: \(error.localizedDescription)\n", stderr)
+                }
+            }
+        }
+        let installed = try controller.installBridgeProfile(expectedOriginal: original)
+        guard installed.installed == candidate,
+              try controller.readKeymap() == candidate else {
+            throw ProbeError.verificationFailed("Node100 full install readback mismatch")
+        }
+        print(
+            "temporary install verified; changed chunks: "
+                + installed.changedChunkAddresses.map(String.init).joined(separator: ", ")
+        )
+        let restored = try controller.restore(original)
+        guard restored == original, try controller.readKeymap() == original else {
+            throw ProbeError.verificationFailed("Node100 final restore mismatch")
+        }
+        needsEmergencyRestore = false
+        print("Node100 keymap validation PASS; original 1904-byte map restored")
+        exit(0)
+    }
+
+    if node100CapabilityRead {
+        guard targetProductID == 0x1037 else {
+            throw ProbeError.verificationFailed(
+                "--node100-capability-read requires --product-id 0x1037"
+            )
+        }
+        let probe = ProtocolProbe(targetProductID: targetProductID)
+        print("== Node100 LP ANSI read-only capability snapshot ==")
+
+        let firmwareResponse = try probe.transact(
+            command: 0xA1,
+            length: 8,
+            address: 0,
+            handle: 0
+        )
+        let firmware = try ProtocolProbe.payload(from: firmwareResponse, expectedLength: 8)
+        print("A1 firmware: \(hexBytes(firmware))")
+
+        let lightCountResponse = try probe.transact(
+            command: 0xD1,
+            length: 4,
+            address: 0,
+            handle: 0
+        )
+        let lightCount = try ProtocolProbe.payload(from: lightCountResponse, expectedLength: 4)
+        print("D1 light count raw: \(hexBytes(lightCount))")
+
+        var stateSamples: [[Int: [UInt8]]] = []
+        for sampleIndex in 0..<8 {
+            var sample: [Int: [UInt8]] = [:]
+            for profileHandle in 0...1 {
+                let response = try probe.transact(
+                    command: 0xD5,
+                    length: 17,
+                    address: 0,
+                    handle: UInt8(profileHandle)
+                )
+                sample[profileHandle] = try ProtocolProbe.payload(
+                    from: response,
+                    expectedLength: 17
+                )
+            }
+            stateSamples.append(sample)
+            let rendered = (0...1).compactMap { profileHandle -> String? in
+                guard let bytes = sample[profileHandle] else { return nil }
+                return "h\(profileHandle)=" + hexBytes(bytes)
+            }.joined(separator: " | ")
+            print("D5 sample \(sampleIndex + 1): \(rendered)")
+            if sampleIndex < 7 { Thread.sleep(forTimeInterval: 0.5) }
+        }
+        for profileHandle in 0...1 {
+            guard let baseline = stateSamples.first?[profileHandle] else { continue }
+            let changingOffsets = baseline.indices.filter { byteIndex in
+                stateSamples.contains { $0[profileHandle]?[byteIndex] != baseline[byteIndex] }
+            }
+            print(
+                "D5 handle \(profileHandle) changing offsets: "
+                    + (changingOffsets.isEmpty
+                        ? "none"
+                        : changingOffsets.map(String.init).joined(separator: ", "))
+            )
+        }
+
+        let sleepResponse = try probe.transact(
+            command: 0xF3,
+            length: 3,
+            address: 0,
+            handle: 0
+        )
+        let sleepConfiguration = try ProtocolProbe.payload(
+            from: sleepResponse,
+            expectedLength: 3
+        )
+        print("F3 sleep raw: \(hexBytes(sleepConfiguration))")
+
+        // Only six known candidate indexes are sampled. This is a D2 read;
+        // no D6, D8, F5, B3 or firmware command is sent by this mode.
+        let indicatorResponse = try probe.transact(
+            command: 0xD2,
+            length: 21,
+            address: 0,
+            handle: 0
+        )
+        let indicatorColors = try ProtocolProbe.payload(
+            from: indicatorResponse,
+            expectedLength: 21
+        )
+        print("D2 LED 0...6 RGB raw: \(hexBytes(indicatorColors))")
+        print("Node100 read-only snapshot complete; no write frame was sent")
+        exit(0)
+    }
+
     if kick75QSignalValidate {
         guard targetProductID == Kick75KeymapController.productID else {
             throw ProbeError.verificationFailed(
@@ -764,12 +1276,12 @@ do {
         for layer in 0..<geometry.layerCount {
             let top = (1...12).compactMap { snapshot.keycode(layer: layer, entry: $0) }
                 .map { String(format: "%04X", $0) }.joined(separator: " ")
-            let knobEntries = [74, 90, 91].compactMap { entry -> String? in
-                guard entry < geometry.entriesPerLayer,
-                      let value = snapshot.keycode(layer: layer, entry: entry) else { return nil }
+            let firstExtraEntry = geometry.rows * geometry.columns
+            let extraEntries = (firstExtraEntry..<geometry.entriesPerLayer).compactMap { entry -> String? in
+                guard let value = snapshot.keycode(layer: layer, entry: entry) else { return nil }
                 return "\(entry):\(String(format: "%04X", value))"
             }.joined(separator: " ")
-            print("L\(layer) top=[\(top)] knob=[\(knobEntries)]")
+            print("L\(layer) top=[\(top)] extra=[\(extraEntries)]")
         }
         exit(0)
     }

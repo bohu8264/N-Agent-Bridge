@@ -486,6 +486,240 @@ public final class Kick75KeymapController: @unchecked Sendable {
     }
 }
 
+/// Verified Node100 Low-profile ANSI keymap writer. This model reports an
+/// independent 6x19 matrix plus five touch-zone entries (119 entries per
+/// layer). Only the two base layers are changed: F1-F12 become the Bridge
+/// usages and the touch zone's mute/volume gestures become three dedicated
+/// reasoning controls. Fn-layer brightness and media gestures remain native.
+public final class Node100LPANSIKeymapController: @unchecked Sendable {
+    public static let vendorID = 0x19F5
+    public static let productID = 0x1037
+    public static let keymapByteCount = 1_904
+
+    private static let getUseKeyMatrix: UInt8 = 0xB2
+    private static let setUseKeyMatrix: UInt8 = 0xB3
+    private static let chunkSize = 56
+    private static let entriesPerLayer = 119
+    private static let layerCount = 8
+    private static let baseLayers = [0, 4]
+    private static let bridgeFunctionRow = (1...12).map { UInt16(0x67 + $0) }
+    private static let macOriginalFunctionRow: [UInt16] = [
+        0x0069, 0x006A, 0x7E06, 0x7E07, 0x7E08, 0x7E16,
+        0x00AC, 0x00AE, 0x00AB, 0x00A8, 0x00AA, 0x00A9,
+    ]
+    private static let windowsOriginalFunctionRow = (0x003A...0x0045).map(UInt16.init)
+    private static let originalTouchControls: [(entry: Int, value: UInt16)] = [
+        (115, 0x00A8), // double tap: mute
+        (117, 0x00AA), // swipe left: volume down
+        (118, 0x00A9), // swipe right: volume up
+    ]
+    private static let bridgeTouchControls: [(entry: Int, value: UInt16)] = [
+        (115, 0x0048), // double tap: Pause / reasoning selector
+        (117, 0x0047), // swipe left: Scroll Lock / reasoning down
+        (118, 0x0046), // swipe right: Print Screen / reasoning up
+    ]
+
+    public init() {}
+
+    public static func hasBridgeProfile(_ bytes: [UInt8]) -> Bool {
+        guard bytes.count == keymapByteCount else { return false }
+        for layer in baseLayers where row(in: bytes, layer: layer) != bridgeFunctionRow {
+            return false
+        }
+        for layer in baseLayers
+        where touchControls(in: bytes, layer: layer) != bridgeTouchControls.map(\.value) {
+            return false
+        }
+        return true
+    }
+
+    public static func isPlausibleKeymap(_ bytes: [UInt8]) -> Bool {
+        (try? Node100LPANSIKeymapController().makeBridgeProfile(from: bytes)) != nil
+    }
+
+    public func readKeymap() throws -> [UInt8] {
+        var result: [UInt8] = []
+        result.reserveCapacity(Self.keymapByteCount)
+        for address in stride(from: 0, to: Self.keymapByteCount, by: Self.chunkSize) {
+            let length = min(Self.chunkSize, Self.keymapByteCount - address)
+            let response = try KeymapProtocolSession(
+                expectedCommand: Self.getUseKeyMatrix,
+                productIDs: [Self.productID]
+            ).transact(
+                command: Self.getUseKeyMatrix,
+                length: UInt8(length),
+                address: UInt16(address),
+                handle: 0,
+                payload: []
+            )
+            result.append(contentsOf: response[8..<(8 + length)])
+        }
+        guard result.count == Self.keymapByteCount else { throw Air75KeymapError.invalidLength }
+        return result
+    }
+
+    public func makeBridgeProfile(from original: [UInt8]) throws -> [UInt8] {
+        guard original.count == Self.keymapByteCount else { throw Air75KeymapError.invalidLength }
+
+        try Self.validateRow(
+            in: original,
+            layer: 0,
+            original: Self.macOriginalFunctionRow
+        )
+        try Self.validateRow(
+            in: original,
+            layer: 4,
+            original: Self.windowsOriginalFunctionRow
+        )
+        for layer in Self.baseLayers {
+            let current = Self.touchControls(in: original, layer: layer)
+            guard current == Self.originalTouchControls.map(\.value)
+                    || current == Self.bridgeTouchControls.map(\.value) else {
+                let mismatch = current.enumerated().first { offset, value in
+                    value != Self.originalTouchControls[offset].value
+                        && value != Self.bridgeTouchControls[offset].value
+                }?.offset ?? 0
+                let entry = layer * Self.entriesPerLayer
+                    + Self.originalTouchControls[mismatch].entry
+                throw Air75KeymapError.incompatibleLayout(index: entry, value: current[mismatch])
+            }
+        }
+
+        var profile = original
+        for layer in Self.baseLayers {
+            for (offset, value) in Self.bridgeFunctionRow.enumerated() {
+                Self.setKeycode(
+                    value,
+                    in: &profile,
+                    entry: layer * Self.entriesPerLayer + offset + 1
+                )
+            }
+            for item in Self.bridgeTouchControls {
+                Self.setKeycode(
+                    item.value,
+                    in: &profile,
+                    entry: layer * Self.entriesPerLayer + item.entry
+                )
+            }
+        }
+        return profile
+    }
+
+    public func installBridgeProfile(
+        expectedOriginal: [UInt8]? = nil
+    ) throws -> Air75KeymapInstallResult {
+        let original = try readKeymap()
+        if let expectedOriginal, original != expectedOriginal {
+            throw Air75KeymapError.verificationFailed
+        }
+        let profile = try makeBridgeProfile(from: original)
+        let changed = changedChunks(from: original, to: profile)
+        guard !changed.isEmpty else {
+            return Air75KeymapInstallResult(
+                original: original,
+                installed: profile,
+                changedChunkAddresses: []
+            )
+        }
+        do {
+            try write(chunksAt: changed, from: profile)
+            Thread.sleep(forTimeInterval: 0.25)
+            guard try readKeymap() == profile else {
+                throw Air75KeymapError.verificationFailed
+            }
+        } catch {
+            try? write(chunksAt: changed, from: original)
+            Thread.sleep(forTimeInterval: 0.25)
+            guard (try? readKeymap()) == original else {
+                throw Air75KeymapError.restoreFailed
+            }
+            throw error
+        }
+        return Air75KeymapInstallResult(
+            original: original,
+            installed: profile,
+            changedChunkAddresses: changed
+        )
+    }
+
+    @discardableResult
+    public func restore(_ bytes: [UInt8]) throws -> [UInt8] {
+        guard Self.isPlausibleKeymap(bytes), !Self.hasBridgeProfile(bytes) else {
+            throw Air75KeymapError.invalidLength
+        }
+        let current = try readKeymap()
+        let changed = changedChunks(from: current, to: bytes)
+        try write(chunksAt: changed, from: bytes)
+        Thread.sleep(forTimeInterval: 0.25)
+        let readback = try readKeymap()
+        guard readback == bytes else { throw Air75KeymapError.restoreFailed }
+        return readback
+    }
+
+    private static func validateRow(
+        in bytes: [UInt8],
+        layer: Int,
+        original: [UInt16]
+    ) throws {
+        let current = row(in: bytes, layer: layer)
+        guard current == original || current == bridgeFunctionRow else {
+            let mismatch = zip(current, original).enumerated().first {
+                $0.element.0 != $0.element.1
+            }?.offset ?? 0
+            throw Air75KeymapError.incompatibleLayout(
+                index: layer * entriesPerLayer + 1 + mismatch,
+                value: current[mismatch]
+            )
+        }
+    }
+
+    private func changedChunks(from before: [UInt8], to after: [UInt8]) -> [Int] {
+        stride(from: 0, to: Self.keymapByteCount, by: Self.chunkSize).filter { address in
+            let end = min(address + Self.chunkSize, Self.keymapByteCount)
+            return before[address..<end] != after[address..<end]
+        }
+    }
+
+    private func write(chunksAt addresses: [Int], from bytes: [UInt8]) throws {
+        for address in addresses {
+            let end = min(address + Self.chunkSize, Self.keymapByteCount)
+            let payload = Array(bytes[address..<end])
+            _ = try KeymapProtocolSession(
+                expectedCommand: Self.setUseKeyMatrix,
+                productIDs: [Self.productID]
+            ).transact(
+                command: Self.setUseKeyMatrix,
+                length: UInt8(payload.count),
+                address: UInt16(address),
+                handle: 0,
+                payload: payload
+            )
+            Thread.sleep(forTimeInterval: 0.06)
+        }
+    }
+
+    private static func row(in bytes: [UInt8], layer: Int) -> [UInt16] {
+        (1...12).map { keycode(in: bytes, entry: layer * entriesPerLayer + $0) }
+    }
+
+    private static func touchControls(in bytes: [UInt8], layer: Int) -> [UInt16] {
+        originalTouchControls.map {
+            keycode(in: bytes, entry: layer * entriesPerLayer + $0.entry)
+        }
+    }
+
+    private static func keycode(in bytes: [UInt8], entry: Int) -> UInt16 {
+        let offset = entry * 2
+        return (UInt16(bytes[offset]) << 8) | UInt16(bytes[offset + 1])
+    }
+
+    private static func setKeycode(_ value: UInt16, in bytes: inout [UInt8], entry: Int) {
+        let offset = entry * 2
+        bytes[offset] = UInt8((value >> 8) & 0xFF)
+        bytes[offset + 1] = UInt8(value & 0xFF)
+    }
+}
+
 private final class KeymapProtocolSession {
     private let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
     private let inputBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 64)

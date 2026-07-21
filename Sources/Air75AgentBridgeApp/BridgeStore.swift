@@ -85,7 +85,7 @@ final class BridgeStore: ObservableObject {
         let loaded = configurationStore.load()
         configuration = loaded
         hardwareProfileMessage = loaded.hasAnyInstalledHardwareProfile
-            ? "已配置键盘的专用层均已在实机完整回读确认；物理 F1–F12 与旋钮可随蓝牙使用"
+            ? "已配置键盘的专用层均已在实机完整回读确认；物理 F1–F12 与推理控制可随蓝牙使用"
             : "尚未写入键盘专用层"
         showOnboarding = !loaded.hasCompletedOnboarding
         let registry = DeviceProfileRegistry.loadBundled()
@@ -276,18 +276,37 @@ final class BridgeStore: ObservableObject {
         currentDevice?.modelName ?? "支持的 NuPhy 键盘"
     }
 
+    var reasoningControlName: String {
+        currentDevice?.profileID == "nuphy.node100-lp-ansi" ? "触控条" : "旋钮"
+    }
+
+    var reasoningControlGestures: [(title: String, detail: String)] {
+        if currentDevice?.profileID == "nuphy.node100-lp-ansi" {
+            return [
+                ("向左滑动", "降低推理深度"),
+                ("双击触控条", "打开模型与推理"),
+                ("向右滑动", "提高推理深度"),
+            ]
+        }
+        return [
+            ("向左旋转", "降低推理深度"),
+            ("按下旋钮", "打开模型与推理"),
+            ("向右旋转", "提高推理深度"),
+        ]
+    }
+
     var currentCapabilitySummary: String {
         guard let profile = profile(for: currentDevice) else { return "等待识别型号" }
         if KeyboardDriverRegistry.keymapDriver(for: profile) != nil,
            KeyboardDriverRegistry.lightingDriver(for: profile) != nil {
             return KeyboardDriverRegistry.lightingDriver(for: profile)?.supportsFullLightingControl == true
                 ? "完整硬件控制"
-                : "按键、旋钮与 Agent 状态灯已验证"
+                : "按键、\(reasoningControlName)与 Agent 状态灯已验证"
         }
         if KeyboardDriverRegistry.keymapDriver(for: profile) != nil {
             return installedHardwareProfileIsCurrent
-                ? "F 区与旋钮硬件控制已配置 · 灯光待验证"
-                : "可配置 F 区与旋钮硬件控制 · 灯光待验证"
+                ? "F 区与\(reasoningControlName)硬件控制已配置 · 灯光待验证"
+                : "可配置 F 区与\(reasoningControlName)硬件控制 · 灯光待验证"
         }
         return "安全软件模式 · 灯光待实机验证"
     }
@@ -312,6 +331,14 @@ final class BridgeStore: ObservableObject {
 
     var supportedSidelightModes: [Air75SidelightMode] {
         currentLightingDriver?.supportedSidelightModes ?? Air75SidelightMode.allCases
+    }
+
+    var supportedBacklightModes: [Air75BacklightMode] {
+        currentLightingDriver?.supportedBacklightModes ?? Air75BacklightMode.allCases
+    }
+
+    var secondaryLightingZoneName: String {
+        currentLightingProfile?.profileID == "nuphy.node100-lp-ansi" ? "点阵灯效" : "普通侧灯灯效"
     }
 
     var sidelightModeNeedsHardwareRecovery: Bool {
@@ -340,7 +367,16 @@ final class BridgeStore: ObservableObject {
             lastMessage = "请先连接受支持的 NuPhy 键盘"
             return
         }
-        if configuration.hasInstalledHardwareProfile(for: device.profileID) {
+        let recordedProfileInstalled = configuration.hasInstalledHardwareProfile(for: device.profileID)
+        let matchingUSBDevice = (device.transports.contains(.usb) ? device : nil)
+            ?? devices.first(where: {
+                $0.isRecognized && $0.transports.contains(.usb) && $0.profileID == device.profileID
+            })
+        // Wireless use is allowed after a verified board profile was installed.
+        // When USB-C is present we deliberately do not trust this saved flag:
+        // read and verify the actual keyboard every time, repairing firmware
+        // updates or configuration copied from another Mac automatically.
+        if recordedProfileInstalled, matchingUSBDevice == nil {
             configuration.enabled = true
             configuration.codexModeEnabled = true
             configuration.mappingPausedByUser = false
@@ -352,10 +388,7 @@ final class BridgeStore: ObservableObject {
             showOverlay("键盘控制已启用", detail: "专用按键现在只控制 Codex")
             return
         }
-        guard let usbDevice = (device.transports.contains(.usb) ? device : nil)
-            ?? devices.first(where: {
-                $0.isRecognized && $0.transports.contains(.usb) && $0.profileID == device.profileID
-            }) else {
+        guard let usbDevice = matchingUSBDevice else {
             lastMessage = "请先用 USB-C 数据线连接受支持的 NuPhy 键盘"
             showOverlay("需要 USB-C", detail: "首次写入键盘专用层时请连接数据线")
             return
@@ -383,10 +416,16 @@ final class BridgeStore: ObservableObject {
         let targetProfileID = controller.profileID
         let currentProfileState = currentConfiguration.hardwareProfileState(for: targetProfileID)
         let targetModelName = usbDevice.modelName ?? usbDevice.productName
+        let defaultIndicatorProfiles: Set<String> = ["nuphy.air75-v3", "nuphy.node100-lp-ansi"]
+        let lightingDriver = KeyboardDriverRegistry.lightingDriver(for: targetProfile)
+        let shouldInitializeIndicatorMode = defaultIndicatorProfiles.contains(targetProfileID)
+            && !currentConfiguration.hasInitializedIndicatorMode(for: targetProfileID)
+            && lightingDriver?.supportsFullLightingControl == true
+            && lightingDriver?.supportedBacklightModes.contains(.signalIndicator) == true
         Task {
             do {
                 let keybindingInstaller = codexKeybindingInstaller
-                let result = try await Task.detached(priority: .userInitiated) { () -> (KeyboardKeymapInstallResult, URL, URL, CodexKeybindingInstallResult) in
+                let result = try await Task.detached(priority: .userInitiated) { () -> (KeyboardKeymapInstallResult, URL, URL, CodexKeybindingInstallResult, [KeyboardLightingState]?, String?) in
                     let original = try controller.readKeymap()
                     // Validate before creating a backup. Firmware updaters can
                     // leave a NuPhyIO encryption session active, in which case
@@ -420,7 +459,23 @@ final class BridgeStore: ObservableObject {
                     )
                     let installed = try controller.installBridgeProfile(expectedOriginal: original)
                     let keybindings = try keybindingInstaller.install()
-                    return (installed, keymapBackup, runtimeBackup, keybindings)
+                    var indicatorStates: [KeyboardLightingState]?
+                    var indicatorError: String?
+                    if shouldInitializeIndicatorMode, let lightingDriver {
+                        do {
+                            indicatorStates = try lightingDriver.setBacklight(
+                                mode: .signalIndicator,
+                                brightness: nil,
+                                color: nil
+                            )
+                        } catch {
+                            // The board profile is already safely installed.
+                            // Report the independent lighting failure without
+                            // pretending that the whole setup rolled back.
+                            indicatorError = error.localizedDescription
+                        }
+                    }
+                    return (installed, keymapBackup, runtimeBackup, keybindings, indicatorStates, indicatorError)
                 }.value
                 lastBackupURL = result.1
                 configuration.mappingMode = .hardwareProfile
@@ -439,12 +494,27 @@ final class BridgeStore: ObservableObject {
                     for: targetProfileID
                 )
                 configuration.setBindings(installedBindings, for: targetProfileID)
+                if let indicatorStates = result.4 {
+                    configuration.markIndicatorModeInitialized(for: targetProfileID)
+                    lightingStates = indicatorStates
+                    lightingConnection = lightingDriver?.detectedConnection()
+                    lightingAvailable = true
+                }
                 persistConfiguration()
                 codexDesktopKeybindingsInstalled = true
                 codexRestartRequired = result.3.changed || codexNeedsRestartForKeybindings()
-                hardwareProfileMessage = result.0.changedChunkAddresses.isEmpty
-                    ? "键盘专用事件与 Codex 命令中继均已验证"
-                    : "键盘专用事件已写入，Codex 命令中继已安装"
+                if let indicatorError = result.5 {
+                    hardwareProfileMessage = "F13–F24 已回读确认；指示灯模式设置失败：\(indicatorError)"
+                } else if result.4 != nil {
+                    hardwareProfileMessage = "F13–F24 已回读确认，背光已进入指示灯模式"
+                } else {
+                    hardwareProfileMessage = result.0.changedChunkAddresses.isEmpty
+                        ? "键盘专用事件与 Codex 命令中继均已验证"
+                        : "键盘专用事件已写入，Codex 命令中继已安装"
+                }
+                lastAgentSignalLights = nil
+                failedAgentSignalLights = nil
+                if lightingAvailable { syncAgentLighting() }
                 if !inputMonitoringGranted || !accessibilityGranted {
                     lastMessage = "硬件已配置；还需在权限页允许输入监控和辅助功能"
                     showOverlay("还差系统权限", detail: "请分别允许输入监控和辅助功能")
@@ -947,6 +1017,8 @@ final class BridgeStore: ObservableObject {
             connection = .usbCable
         case Kick75KeymapController.productID:
             connection = .usbCable
+        case Node100LPANSIKeymapController.productID:
+            connection = .usbCable
         case Air75V3LightingController.dongleProductID:
             connection = .twoPointFourGHzReceiver
         default:
@@ -1370,10 +1442,10 @@ final class BridgeStore: ObservableObject {
                     configuration.lighting.usbSingleKey = .verified
                 }
                 persistConfiguration()
-                lightingMessage = "六个 Agent 状态已同步到各自实体键；侧灯保持用户灯效"
+                lightingMessage = "六个 Agent 状态已同步到各自实体键；\(secondaryLightingZoneName)保持用户设置"
             } catch {
                 failedAgentSignalLights = desired
-                lightingMessage = "Agent 实体键指示灯写入失败；侧灯不受影响：\(error.localizedDescription)"
+                lightingMessage = "Agent 实体键指示灯写入失败；\(secondaryLightingZoneName)不受影响：\(error.localizedDescription)"
             }
             lightingBusy = false
             if failedAgentSignalLights == nil { syncAgentLighting() }

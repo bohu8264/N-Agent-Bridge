@@ -19,7 +19,7 @@ else
 fi
 
 [[ -x "$executable_path" ]]
-for profile_filename in Air75V3.json Air65V3.json Air100V3.json Kick75.json Node75.json Node100.json; do
+for profile_filename in Air75V3.json Air65V3.json Air100V3.json Kick75.json Node75.json Node100.json Node100LPANSI.json; do
   [[ -f "$profile_bundle/$profile_filename" ]]
 done
 if strings "$executable_path" | rg -Fq "could not load resource bundle" \

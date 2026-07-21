@@ -384,7 +384,7 @@ public struct InstalledHardwareProfileState: Codable, Equatable, Sendable {
 }
 
 public struct BridgeConfiguration: Codable, Sendable {
-    public var schemaVersion = 11
+    public var schemaVersion = 12
     public var hasCompletedOnboarding = false
     public var enabled = false
     public var codexModeEnabled = false
@@ -418,6 +418,10 @@ public struct BridgeConfiguration: Codable, Sendable {
     /// Schema 8 keeps this field name for configuration compatibility, but it
     /// now controls only the six Agent-key task indicator lights.
     public var agentLightingEnabled: Bool? = true
+    /// The first successful USB-C setup selects the firmware's verified
+    /// indicator backlight mode once. Keep this per model so later launches
+    /// never overwrite a user's own lighting choice.
+    public var indicatorModeInitializedProfileIDs: [String]?
     /// Schema 7 and older continuously replaced the user's sidelight with an
     /// aggregate Codex color. Upgrades restore the earliest hardware backup
     /// once, then leave the sidelight entirely under normal keyboard control.
@@ -442,6 +446,16 @@ public struct BridgeConfiguration: Codable, Sendable {
 
     public var resolvedAgentSourceMode: CodexAgentSourceMode {
         agentSourceMode ?? .recent
+    }
+
+    public func hasInitializedIndicatorMode(for profileID: String) -> Bool {
+        indicatorModeInitializedProfileIDs?.contains(profileID) == true
+    }
+
+    public mutating func markIndicatorModeInitialized(for profileID: String) {
+        var values = Set(indicatorModeInitializedProfileIDs ?? [])
+        values.insert(profileID)
+        indicatorModeInitializedProfileIDs = values.sorted()
     }
 
     public var resolvedCustomAgentThreadIDs: [String?] {

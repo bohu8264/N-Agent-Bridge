@@ -143,6 +143,14 @@ public final class ConfigurationStore: @unchecked Sendable {
             value.schemaVersion = 11
             requiresSchemaSave = true
         }
+        if value.schemaVersion < 12 {
+            // Apply the verified indicator default once when each supported
+            // model is next enabled over USB-C. This also repairs machines
+            // upgraded from builds that left an arbitrary backlight mode.
+            value.indicatorModeInitializedProfileIDs = []
+            value.schemaVersion = 12
+            requiresSchemaSave = true
+        }
         // A short-lived multi-model build derived Kick75 from the installed
         // Air profile and persisted only Agent 1 as F14 while the remaining
         // actions stayed F2-F12. That mixed sequence can never represent the
