@@ -49,6 +49,7 @@ final class BridgeStore: ObservableObject {
     @Published var codexTopTaskLightState: CodexTaskLightState = .idle
     @Published var codexTopTaskID: String?
     @Published var codexTasks: [CodexTaskLightSnapshot] = []
+    @Published var codexThreadCandidates: [CodexTaskLightSnapshot] = []
 
     let configurationStore = ConfigurationStore()
     let profileRegistry: DeviceProfileRegistry
@@ -60,15 +61,23 @@ final class BridgeStore: ObservableObject {
     let codexKeybindingInstaller = CodexKeybindingInstaller()
     let codexDesktopRelay = CodexDesktopRelay()
     let codexDesktopStatusObserver = CodexDesktopStatusObserver()
+    let codexDesktopTitleObserver = CodexDesktopTitleObserver()
+    let codexDesktopConfirmationObserver = CodexDesktopConfirmationObserver()
     let dedicatedKeyEventSuppressor = DedicatedKeyEventSuppressor()
 
     private var cancellables = Set<AnyCancellable>()
     private var originalLightingStates: [Air75LightingState]?
-    private var userSignalLights: [Air75SignalLight]?
+    private var userSignalLightsByIndex: [UInt8: Air75SignalLight] = [:]
+    private var managedSignalLightIndices = Set(Air75V3LightingController.taskSignalLightIndices)
     private var lastAgentSignalLights: [Air75SignalLight]?
     private var failedAgentSignalLights: [Air75SignalLight]?
+    private var lastAgentSignalWriteAt: Date?
+    private var lastAgentSignalAttemptAt: Date?
+    private var lastKeyboardActivityAt = Date()
     private var pendingLearningEvent: HIDEvent?
     private var wirelessLightingRetryTask: Task<Void, Never>?
+    private var lastAgentPress: (slot: Int, threadID: String?, date: Date)?
+    private var pendingCustomSlot: (index: Int, knownThreadIDs: Set<String>, expiresAt: Date)?
 
     init() {
         let loaded = configurationStore.load()
@@ -170,14 +179,41 @@ final class BridgeStore: ObservableObject {
         codexDesktopStatusObserver.handler = { [weak self] snapshots in
             Task { @MainActor in self?.applyDesktopTaskSnapshots(snapshots) }
         }
+        codexDesktopTitleObserver.handler = { [weak self] titles in
+            self?.codexDesktopStatusObserver.setAppServerTitles(titles)
+        }
+        codexDesktopConfirmationObserver.handler = { [weak self] snapshot in
+            self?.codexDesktopStatusObserver.setVisibleConfirmationThreadID(
+                snapshot.isWaitingForConfirmation ? snapshot.threadID : nil
+            )
+            UserDefaults.standard.set(
+                snapshot.isWaitingForConfirmation,
+                forKey: "CodexVisibleConfirmationWaiting"
+            )
+            UserDefaults.standard.set(
+                snapshot.threadID,
+                forKey: "CodexVisibleConfirmationThreadID"
+            )
+        }
+        updateTrackedCodexThreadIDs()
 
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.refreshPermissions() }
+            .sink { [weak self] _ in
+                self?.refreshPermissions()
+                self?.scheduleAgentLightingResyncAfterWake()
+            }
+            .store(in: &cancellables)
+
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.scheduleAgentLightingResyncAfterWake(force: true) }
             .store(in: &cancellables)
 
         deviceManager.start()
+        codexDesktopTitleObserver.start()
         codexDesktopStatusObserver.start()
+        codexDesktopConfirmationObserver.start()
         syncDedicatedEventSuppression()
         publishPermissionDiagnostics()
     }
@@ -189,8 +225,24 @@ final class BridgeStore: ObservableObject {
 
     var currentSlot: AgentSlot? { slots.first(where: { $0.slotId == selectedSlot }) }
 
+    var agentKeyLabels: [String] {
+        let actions: [BridgeAction] = [.agent1, .agent2, .agent3, .agent4, .agent5, .agent6]
+        return actions.map { action in
+            configuration.keyBindings.first(where: { $0.action == action })?.displayName ?? "未设置"
+        }
+    }
+
     var currentModelName: String {
         currentDevice?.modelName ?? "支持的 NuPhy 键盘"
+    }
+
+    var currentCapabilitySummary: String {
+        guard let profile = profile(for: currentDevice) else { return "等待识别型号" }
+        if KeyboardDriverRegistry.keymapDriver(for: profile) != nil,
+           KeyboardDriverRegistry.lightingDriver(for: profile) != nil {
+            return "完整硬件控制"
+        }
+        return "安全软件模式 · 灯光待实机验证"
     }
 
     private func profile(for device: DeviceSnapshot?) -> DeviceProfile? {
@@ -221,6 +273,15 @@ final class BridgeStore: ObservableObject {
         KeyboardDriverRegistry.sleepDriver(for: currentLightingProfile)
     }
 
+    private var currentSignalLightLayoutID: String? {
+        profile(for: currentDevice)?.capabilities?.signalLightLayoutID
+            ?? profileRegistry.profile(id: configuration.hardwareProfileID)?.capabilities?.signalLightLayoutID
+    }
+
+    var signalLightingSupported: Bool {
+        currentSignalLightLayoutID != nil && currentLightingDriver != nil
+    }
+
     func oneClickEnable() {
         guard !hardwareProfileBusy else { return }
         if configuration.hardwareProfileInstalled == true {
@@ -247,7 +308,19 @@ final class BridgeStore: ObservableObject {
         }
         let targetProfile = profile(for: usbDevice)
         guard let controller = KeyboardDriverRegistry.keymapDriver(for: targetProfile) else {
-            lastMessage = "\(usbDevice.modelName ?? usbDevice.productName) 目前只支持安全的软件按键模式，硬件专用层尚未验证"
+            configuration.boundFingerprint = usbDevice.fingerprint
+            configuration.hardwareProfileID = targetProfile?.profileID
+            configuration.mappingMode = .runtime
+            configuration.enabled = true
+            configuration.codexModeEnabled = true
+            configuration.mappingPausedByUser = false
+            configuration.hardwareProfileInstalled = false
+            configuration.keyBindings = BridgeConfiguration.bindingsForOriginalHardwareProfile(
+                configuration.keyBindings
+            )
+            persistConfiguration()
+            if !codexDesktopKeybindingsInstalled { installCodexDesktopBindings() }
+            lastMessage = "\(usbDevice.modelName ?? usbDevice.productName) 已启用安全的软件按键模式；未向未经实机验证的固件写入配置"
             return
         }
         hardwareProfileBusy = true
@@ -541,6 +614,8 @@ final class BridgeStore: ObservableObject {
         deviceManager.calibrationMode = false
         persistConfiguration()
         lastMessage = "已恢复为实体 F1–F12 默认映射"
+        lastAgentSignalLights = nil
+        if lightingAvailable { syncAgentLighting() }
     }
 
     private func consumeLearningEvent(_ event: HIDEvent) -> Bool {
@@ -586,14 +661,23 @@ final class BridgeStore: ObservableObject {
         }) {
             configuration.keyBindings[duplicate].usagePage = previous.usagePage
             configuration.keyBindings[duplicate].usage = previous.usage
+            configuration.keyBindings[duplicate].signalLightIndex = previous.signalLightIndex
         }
         configuration.keyBindings[index].usagePage = learnedEvent.usagePage
         configuration.keyBindings[index].usage = learnedEvent.usage
+        configuration.keyBindings[index].signalLightIndex = SignalLightLayout.index(
+            layoutID: currentSignalLightLayoutID,
+            usagePage: learnedEvent.usagePage,
+            usage: learnedEvent.usage
+        )
         let learnedName = configuration.keyBindings[index].displayName
         learningBindingIndex = nil
         pendingLearningEvent = nil
         deviceManager.calibrationMode = false
         persistConfiguration()
+        lastAgentSignalLights = nil
+        failedAgentSignalLights = nil
+        if lightingAvailable { syncAgentLighting() }
         lastMessage = "已学习 \(learnedName) → \(configuration.keyBindings[index].action.displayName)"
         showOverlay("按键已学习", detail: "\(learnedName) → \(configuration.keyBindings[index].action.displayName)")
         return true
@@ -692,19 +776,43 @@ final class BridgeStore: ObservableObject {
         default:
             return
         }
+        let now = Date()
+        let likelyWake = now.timeIntervalSince(lastKeyboardActivityAt) > 30
+        lastKeyboardActivityAt = now
         currentLightingDriver?.preferConnection(connection)
-        guard lightingConnection != connection else { return }
-        lightingConnection = connection
-        lightingAvailable = false
-        sleepConfiguration = nil
-        lastAgentSignalLights = nil
-        failedAgentSignalLights = nil
+        if lightingConnection != connection {
+            lightingConnection = connection
+            lightingAvailable = false
+            sleepConfiguration = nil
+            lastAgentSignalLights = nil
+            failedAgentSignalLights = nil
+        }
+        if likelyWake {
+            scheduleAgentLightingResyncAfterWake(force: true)
+        }
+    }
+
+    /// Firmware D8 colors are transient on some sleep/wake paths. Reassert the
+    /// current six logical states after a likely keyboard or Mac wake instead
+    /// of trusting the last successful write cache forever.
+    private func scheduleAgentLightingResyncAfterWake(force: Bool = false) {
+        guard configuration.agentLightingEnabled == true else { return }
+        if force || lastAgentSignalWriteAt.map({ Date().timeIntervalSince($0) > 15 }) != false {
+            lastAgentSignalLights = nil
+            failedAgentSignalLights = nil
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            if self.lightingAvailable { self.syncAgentLighting() }
+            else if self.currentLightingDriver?.detectedConnection() != nil { self.refreshLighting() }
+        }
     }
 
     func setKeyboardLightStayOnMinutes(_ minutes: Int?) {
         guard !lightingBusy else { return }
         guard lightingConnection == .usbCable else {
-            lightingMessage = "灯光保持时间属于键盘管理设置，请连接 USB-C 后修改；F1–F6 状态灯不受影响"
+            lightingMessage = "灯光保持时间属于键盘管理设置，请连接 USB-C 后修改；Agent 状态灯不受影响"
             return
         }
         guard let controller = currentSleepDriver else {
@@ -766,6 +874,13 @@ final class BridgeStore: ObservableObject {
         }
     }
 
+    func setSidelightStaticColor(hex: String) {
+        guard let color = Air75RGBColor(hex: hex) else { return }
+        runLightingWrite(label: "侧灯常亮颜色：\(hex.uppercased())") { controller in
+            try controller.setSidelight(mode: .staticColor, brightness: nil, color: color)
+        }
+    }
+
     func setBacklightStaticColor(hex: String) {
         guard let color = Air75RGBColor(hex: hex) else { return }
         runLightingWrite(label: "背光常亮颜色：\(hex.uppercased())") { controller in
@@ -784,6 +899,8 @@ final class BridgeStore: ObservableObject {
         configuration.agentLightingEnabled = enabled
         lastAgentSignalLights = nil
         failedAgentSignalLights = nil
+        lastAgentSignalWriteAt = nil
+        lastAgentSignalAttemptAt = nil
         persistConfiguration()
         if enabled { syncAgentLighting() }
         else { restoreUserSignalLights() }
@@ -804,7 +921,7 @@ final class BridgeStore: ObservableObject {
         if lightingAvailable {
             syncAgentLighting()
         } else {
-            lightingMessage = "颜色已保存；连接 USB-C 后会自动应用到 F1–F6"
+            lightingMessage = "颜色已保存；连接灯光通道后会自动应用到 Agent 实体键"
         }
     }
 
@@ -817,7 +934,8 @@ final class BridgeStore: ObservableObject {
     }
 
     private func restoreUserSignalLights() {
-        guard let saved = userSignalLights else {
+        let saved = userSignalLightsByIndex.values.sorted { $0.index < $1.index }
+        guard !saved.isEmpty else {
             lightingMessage = "Codex 状态灯模式已关闭；键盘灯光已恢复"
             return
         }
@@ -835,11 +953,12 @@ final class BridgeStore: ObservableObject {
                 _ = try await Task.detached(priority: .userInitiated) {
                     try controller.setSignalLights(saved)
                 }.value
-                userSignalLights = nil
+                userSignalLightsByIndex = [:]
+                managedSignalLightIndices = Set(Air75V3LightingController.taskSignalLightIndices)
                 lastAgentSignalLights = nil
-                lightingMessage = "已恢复进入 Codex 模式前的 F1–F6 灯光"
+                lightingMessage = "已恢复进入 Codex 模式前的实体键灯光"
             } catch {
-                lightingMessage = "F1–F6 灯光恢复失败：\(error.localizedDescription)"
+                lightingMessage = "Agent 实体键灯光恢复失败：\(error.localizedDescription)"
             }
             lightingBusy = false
         }
@@ -968,12 +1087,28 @@ final class BridgeStore: ObservableObject {
     }
 
     private func desiredAgentSignalLights() -> [Air75SignalLight] {
-        let taskLights = Air75V3LightingController.taskSignalLightIndices.enumerated().compactMap {
-            (taskIndex, lightIndex) -> Air75SignalLight? in
-            let state = taskIndex < codexTasks.count ? codexTasks[taskIndex].state : .idle
-            guard let color = Air75RGBColor(hex: taskLightColorHex(for: state)) else { return nil }
-            return Air75SignalLight(index: lightIndex, color: color)
+        let actions: [BridgeAction] = [.agent1, .agent2, .agent3, .agent4, .agent5, .agent6]
+        var desiredByIndex: [UInt8: Air75SignalLight] = [:]
+        let off = Air75RGBColor(red: 0, green: 0, blue: 0)
+        let activeIndices = Set(actions.compactMap { action -> UInt8? in
+            guard let value = configuration.keyBindings.first(where: { $0.action == action })?.signalLightIndex,
+                  (0...255).contains(value) else { return nil }
+            return UInt8(value)
+        })
+        let indicesToClear = managedSignalLightIndices.union(Air75V3LightingController.taskSignalLightIndices)
+            .subtracting(activeIndices)
+        for index in indicesToClear { desiredByIndex[index] = Air75SignalLight(index: index, color: off) }
+        for (taskIndex, action) in actions.enumerated() {
+            guard let value = configuration.keyBindings.first(where: { $0.action == action })?.signalLightIndex,
+                  (0...255).contains(value) else { continue }
+            let index = UInt8(value)
+            let snapshot = codexTasks.indices.contains(taskIndex) ? codexTasks[taskIndex] : .unassigned
+            let color = snapshot.threadID == nil
+                ? off
+                : (Air75RGBColor(hex: taskLightColorHex(for: snapshot.state)) ?? off)
+            desiredByIndex[index] = Air75SignalLight(index: index, color: color)
         }
+        managedSignalLightIndices.formUnion(activeIndices)
         // 0.10.0 accidentally wrote task 1 to index 0 (Esc). D8 colors
         // persist until explicitly replaced, so every sync clears that stale
         // indicator while writing the six real F-row indexes.
@@ -981,42 +1116,60 @@ final class BridgeStore: ObservableObject {
             index: Air75V3LightingController.escapeSignalLightIndex,
             color: Air75RGBColor(red: 0, green: 0, blue: 0)
         )
-        return [escapeOff] + taskLights
+        desiredByIndex[Air75V3LightingController.escapeSignalLightIndex] = escapeOff
+        return desiredByIndex.values.sorted { $0.index < $1.index }
     }
 
     private func syncAgentSignalLights() {
         guard configuration.agentLightingEnabled == true, lightingAvailable, !lightingBusy else { return }
         let desired = desiredAgentSignalLights()
-        guard desired.count == 7, lastAgentSignalLights != desired,
-              failedAgentSignalLights != desired,
+        let now = Date()
+        let hasLiveStatus = codexTasks.contains { snapshot in
+            snapshot.threadID != nil && snapshot.state != .idle
+        }
+        let keepaliveDue = hasLiveStatus
+            && (lastAgentSignalWriteAt.map { now.timeIntervalSince($0) >= 90 } ?? true)
+        let retryDue = failedAgentSignalLights == desired
+            && (lastAgentSignalAttemptAt.map { now.timeIntervalSince($0) >= 30 } ?? true)
+        guard desired.count >= 2,
+              lastAgentSignalLights != desired || keepaliveDue,
+              failedAgentSignalLights != desired || retryDue,
               let controller = currentLightingDriver else { return }
 
+        let backupIndices = desired.map(\.index).filter {
+            $0 != Air75V3LightingController.escapeSignalLightIndex
+                && userSignalLightsByIndex[$0] == nil
+        }
+
         lightingBusy = true
-        lightingMessage = "正在同步 F1–F6 六个任务状态…"
+        lastAgentSignalAttemptAt = now
+        lightingMessage = "正在同步六个 Agent 实体键状态…"
         Task {
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
-                    let before = try? controller.readSignalLights(
-                        indices: Air75V3LightingController.taskSignalLightIndices
-                    )
+                    let before = backupIndices.isEmpty
+                        ? nil : (try? controller.readSignalLights(indices: backupIndices))
                     let written = try controller.setSignalLights(desired)
                     return (before, written)
                 }.value
-                if userSignalLights == nil, let before = result.0, before.count == 6 {
-                    userSignalLights = before
+                if let before = result.0 {
+                    for light in before where userSignalLightsByIndex[light.index] == nil {
+                        userSignalLightsByIndex[light.index] = light
+                    }
                 }
                 lastAgentSignalLights = result.1
                 failedAgentSignalLights = nil
+                lastAgentSignalWriteAt = Date()
                 if lightingConnection == .twoPointFourGHzReceiver {
                     configuration.lighting.bluetoothSingleKey = .verified
                 } else {
                     configuration.lighting.usbSingleKey = .verified
                 }
                 persistConfiguration()
-                lightingMessage = "F1–F6 已分别同步六个 Codex 任务状态；侧灯保持官方灯效"
+                lightingMessage = "六个 Agent 状态已同步到各自实体键；侧灯保持用户灯效"
             } catch {
                 failedAgentSignalLights = desired
-                lightingMessage = "F1–F6 指示灯写入失败；侧灯不受影响：\(error.localizedDescription)"
+                lightingMessage = "Agent 实体键指示灯写入失败；侧灯不受影响：\(error.localizedDescription)"
             }
             lightingBusy = false
             if failedAgentSignalLights == nil { syncAgentLighting() }
@@ -1024,27 +1177,100 @@ final class BridgeStore: ObservableObject {
     }
 
     private func applyDesktopTaskSnapshots(_ snapshots: [CodexTaskLightSnapshot]) {
-        codexTasks = Array(snapshots.prefix(CodexDesktopStatusObserver.maximumTaskCount))
+        codexThreadCandidates = snapshots
+        bindPendingCustomThreadIfNeeded(from: snapshots)
+        codexTasks = CodexAgentSlotResolver.resolve(
+            candidates: snapshots,
+            mode: configuration.resolvedAgentSourceMode,
+            pinnedThreadIDs: configuration.resolvedPinnedAgentThreadIDs,
+            customThreadIDs: configuration.resolvedCustomAgentThreadIDs
+        )
         // Aggregate remains useful for compact software summaries; hardware
-        // status is represented independently by F1-F6 from schema 8 onward.
+        // Hardware status is represented independently by the six current
+        // Agent-key locations from schema 9 onward.
         codexTopTaskLightState = CodexTaskLightAggregator.aggregate(codexTasks.map(\.state))
-        codexTopTaskID = codexTasks.first?.threadID
+        codexTopTaskID = codexTasks.first(where: { $0.threadID != nil })?.threadID
         for index in slots.indices {
-            if index < codexTasks.count {
+            if index < codexTasks.count, codexTasks[index].threadID != nil {
                 let snapshot = codexTasks[index]
                 slots[index].sessionId = snapshot.threadID
+                slots[index].title = snapshot.title?.isEmpty == false
+                    ? snapshot.title! : "Codex 对话 \(index + 1)"
+                slots[index].projectPath = snapshot.projectPath ?? slots[index].projectPath
                 slots[index].state = Self.slotState(for: snapshot.state)
+                slots[index].isUnread = snapshot.isUnread
                 slots[index].isWaitingForApproval = snapshot.state == .waitingForConfirmation
                 slots[index].hasError = snapshot.state == .error
                 if let eventDate = snapshot.eventDate { slots[index].updatedAt = eventDate }
             } else {
                 slots[index].sessionId = nil
                 slots[index].state = .noAssignment
+                slots[index].isUnread = false
                 slots[index].isWaitingForApproval = false
                 slots[index].hasError = false
             }
         }
         syncAgentLighting()
+    }
+
+    func setAgentSourceMode(_ mode: CodexAgentSourceMode) {
+        configuration.agentSourceMode = mode
+        persistConfiguration()
+        applyDesktopTaskSnapshots(codexThreadCandidates)
+    }
+
+    func assignedThreadID(for slotIndex: Int, mode: CodexAgentSourceMode? = nil) -> String? {
+        guard (0..<CodexAgentSlotResolver.slotCount).contains(slotIndex) else { return nil }
+        switch mode ?? configuration.resolvedAgentSourceMode {
+        case .custom: return configuration.resolvedCustomAgentThreadIDs[slotIndex]
+        case .recent, .pinned, .priority:
+            return codexTasks.indices.contains(slotIndex) ? codexTasks[slotIndex].threadID : nil
+        }
+    }
+
+    func assignThread(_ threadID: String?, to slotIndex: Int, for mode: CodexAgentSourceMode) {
+        guard (0..<CodexAgentSlotResolver.slotCount).contains(slotIndex),
+              mode == .custom || mode == .pinned else { return }
+        if mode == .custom {
+            var values = configuration.resolvedCustomAgentThreadIDs
+            values[slotIndex] = threadID
+            configuration.customAgentThreadIDs = values
+        } else {
+            var values = configuration.resolvedPinnedAgentThreadIDs
+            values[slotIndex] = threadID
+            configuration.pinnedAgentThreadIDs = values
+        }
+        updateTrackedCodexThreadIDs()
+        persistConfiguration()
+        applyDesktopTaskSnapshots(codexThreadCandidates)
+    }
+
+    private func bindPendingCustomThreadIfNeeded(from candidates: [CodexTaskLightSnapshot]) {
+        guard let pending = pendingCustomSlot else { return }
+        guard Date() <= pending.expiresAt else {
+            pendingCustomSlot = nil
+            return
+        }
+        guard let created = candidates
+            .filter({ snapshot in
+                guard let id = snapshot.threadID else { return false }
+                return !pending.knownThreadIDs.contains(id)
+            })
+            .max(by: { $0.recencyAtMS < $1.recencyAtMS }),
+              let id = created.threadID else { return }
+        var values = configuration.resolvedCustomAgentThreadIDs
+        values[pending.index] = id
+        configuration.customAgentThreadIDs = values
+        pendingCustomSlot = nil
+        updateTrackedCodexThreadIDs()
+        persistConfiguration()
+        lastMessage = "新对话已自动绑定到 Agent \(pending.index + 1)"
+    }
+
+    private func updateTrackedCodexThreadIDs() {
+        let custom = configuration.resolvedCustomAgentThreadIDs.compactMap { $0 }
+        let pinned = configuration.resolvedPinnedAgentThreadIDs.compactMap { $0 }
+        codexDesktopStatusObserver.setTrackedThreadIDs(Set(custom + pinned))
     }
 
     private static func slotState(for state: CodexTaskLightState) -> AgentState {
@@ -1107,6 +1333,11 @@ final class BridgeStore: ObservableObject {
     }
 
     private func perform(_ action: BridgeAction, event: HIDEvent, phase: KeyPhase) {
+        if let slotIndex = Self.agentSlotIndex(for: action) {
+            guard phase == .down else { return }
+            performAgentAction(slotIndex: slotIndex)
+            return
+        }
         guard codexDesktopKeybindingsInstalled else {
             if phase == .down {
                 lastMessage = "尚未安装 Codex 中继快捷键，请点“一键启用”"
@@ -1129,6 +1360,38 @@ final class BridgeStore: ObservableObject {
             if phase == .down || phase == .up {
                 showOverlay("Codex 控制未授权", detail: error.localizedDescription)
             }
+        }
+    }
+
+    private static func agentSlotIndex(for action: BridgeAction) -> Int? {
+        [BridgeAction.agent1, .agent2, .agent3, .agent4, .agent5, .agent6].firstIndex(of: action)
+    }
+
+    private func performAgentAction(slotIndex: Int) {
+        let now = Date()
+        let currentThreadID = assignedThreadID(for: slotIndex)
+        let repeated = lastAgentPress.map {
+            $0.slot == slotIndex && now.timeIntervalSince($0.date) <= 0.35
+        } ?? false
+        let threadID = repeated ? (lastAgentPress?.threadID ?? currentThreadID) : currentThreadID
+        lastAgentPress = (slotIndex, currentThreadID, now)
+        do {
+            if let threadID {
+                try codexDesktopRelay.openThread(threadID, activate: repeated)
+                lastMessage = "Agent \(slotIndex + 1)：已打开对应对话"
+            } else if repeated {
+                try codexDesktopRelay.activateCodex()
+            } else if configuration.resolvedAgentSourceMode == .custom {
+                let known = Set(codexThreadCandidates.compactMap(\.threadID))
+                pendingCustomSlot = (slotIndex, known, now.addingTimeInterval(30))
+                try codexDesktopRelay.openNewThread(activate: true)
+                lastMessage = "Agent \(slotIndex + 1)：新对话将在创建后自动绑定"
+            } else {
+                try codexDesktopRelay.openNewThread(activate: true)
+                lastMessage = "当前 Agent 位没有对话，已打开新建对话"
+            }
+        } catch {
+            lastMessage = "Codex 对话切换失败：\(error.localizedDescription)"
         }
     }
 

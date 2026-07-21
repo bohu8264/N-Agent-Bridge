@@ -6,7 +6,7 @@ project_dir=${script_dir:h}
 app_dir="$project_dir/dist/N Agent Bridge.app"
 release_kind=${AIR75_RELEASE_KIND:-development}
 executable_path="$app_dir/Contents/MacOS/Air75AgentBridge"
-profile_resource="$app_dir/Contents/Resources/Air75AgentBridge_Air75AgentBridgeCore.bundle/Air75V3.json"
+profile_bundle="$app_dir/Contents/Resources/Air75AgentBridge_Air75AgentBridgeCore.bundle"
 
 if [[ "$release_kind" == "distribution" ]]; then
   dmg_path="$project_dir/dist/NAgentBridge.dmg"
@@ -19,7 +19,9 @@ else
 fi
 
 [[ -x "$executable_path" ]]
-[[ -f "$profile_resource" ]]
+for profile_filename in Air75V3.json Air65V3.json Air100V3.json Kick75.json Node75.json Node100.json; do
+  [[ -f "$profile_bundle/$profile_filename" ]]
+done
 if strings "$executable_path" | rg -Fq "could not load resource bundle" \
    || strings "$executable_path" | rg -Fq "$project_dir/.build"; then
   echo "Release executable still contains a SwiftPM build-path resource fallback." >&2

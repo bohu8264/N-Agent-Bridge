@@ -25,7 +25,10 @@ let package = Package(
         .executableTarget(
             name: "Air75AgentBridgeApp",
             dependencies: ["Air75AgentBridgeCore"],
-            linkerSettings: [.linkedFramework("AppKit")]
+            linkerSettings: [
+                .linkedFramework("AppKit"),
+                .linkedFramework("ApplicationServices")
+            ]
         ),
         .executableTarget(
             name: "Air75HIDInspector",
@@ -42,6 +45,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "CodexAXProbe",
+            dependencies: ["Air75AgentBridgeCore"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("ApplicationServices")

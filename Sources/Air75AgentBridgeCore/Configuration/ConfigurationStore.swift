@@ -99,6 +99,26 @@ public final class ConfigurationStore: @unchecked Sendable {
             value.schemaVersion = 8
             requiresSchemaSave = true
         }
+        if value.schemaVersion < 9 {
+            value.agentSourceMode = .recent
+            value.customAgentThreadIDs = Array(repeating: nil, count: 6)
+            value.pinnedAgentThreadIDs = Array(repeating: nil, count: 6)
+            let layoutID = value.hardwareProfileID == "nuphy.air75-v3"
+                ? "nuphy.air75-v3.ansi-d8" : nil
+            if layoutID != nil {
+                value.keyBindings = value.keyBindings.map { binding in
+                    var repaired = binding
+                    repaired.signalLightIndex = SignalLightLayout.index(
+                        layoutID: layoutID,
+                        usagePage: binding.usagePage,
+                        usage: binding.usage
+                    )
+                    return repaired
+                }
+            }
+            value.schemaVersion = 9
+            requiresSchemaSave = true
+        }
         if requiresSchemaSave { try? save(value) }
         return value
     }

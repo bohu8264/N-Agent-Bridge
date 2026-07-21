@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Air75AgentBridgeCore
 import Foundation
 
 func value(_ element: AXUIElement, _ attribute: String) -> AnyObject? {
@@ -54,6 +55,59 @@ guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "
 
 print("trusted=\(AXIsProcessTrusted()) pid=\(app.processIdentifier)")
 let root = AXUIElementCreateApplication(app.processIdentifier)
+
+if CommandLine.arguments.contains("--confirmation-state") {
+    func confirmationNode(_ element: AXUIElement) -> (String?, [AXUIElement]) {
+        let names = [kAXRoleAttribute, kAXVisibleChildrenAttribute, kAXChildrenAttribute] as CFArray
+        var result: CFArray?
+        guard AXUIElementCopyMultipleAttributeValues(
+            element, names, AXCopyMultipleAttributeOptions(rawValue: 0), &result
+        ) == .success, let values = result as? [Any], values.count == 3 else {
+            return (string(element, kAXRoleAttribute), children(element))
+        }
+        let visible = values[1] as? [AXUIElement] ?? []
+        let regular = values[2] as? [AXUIElement] ?? []
+        return (values[0] as? String, visible.isEmpty ? regular : visible)
+    }
+    func confirmationButtonLabels(_ element: AXUIElement) -> [String] {
+        let names = [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute] as CFArray
+        var result: CFArray?
+        guard AXUIElementCopyMultipleAttributeValues(
+            element, names, AXCopyMultipleAttributeOptions(rawValue: 0), &result
+        ) == .success, let values = result as? [Any] else { return [] }
+        return values.compactMap { $0 as? String }.filter { !$0.isEmpty }
+    }
+    let focusedValue = value(root, kAXFocusedUIElementAttribute)
+    let focusedElement: AXUIElement? = focusedValue.flatMap {
+        CFGetTypeID($0) == AXUIElementGetTypeID()
+            ? unsafeBitCast($0, to: AXUIElement.self) : nil
+    }
+    var stack: [AXUIElement] = [focusedElement ?? root]
+    var inspected = Set<CFHashCode>()
+    var buttonLabels: [String] = []
+    var remaining = 120
+    while let element = stack.popLast(), remaining > 0 {
+        remaining -= 1
+        guard inspected.insert(CFHash(element)).inserted else { continue }
+        let node = confirmationNode(element)
+        if node.0 == (kAXButtonRole as String) {
+            let currentLabels = confirmationButtonLabels(element)
+            buttonLabels.append(contentsOf: currentLabels)
+            if CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation(currentLabels) {
+                print("CONFIRMATION waiting=true nodes=\(120 - remaining)")
+                exit(EXIT_SUCCESS)
+            }
+            if CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(buttonLabels) {
+                print("CONFIRMATION waiting=true nodes=\(120 - remaining)")
+                exit(EXIT_SUCCESS)
+            }
+        }
+        stack.append(contentsOf: node.1)
+    }
+    print("CONFIRMATION waiting=false nodes=\(120 - remaining)")
+    exit(EXIT_SUCCESS)
+}
+
 var seen = Set<CFHashCode>()
 var remaining = 1500
 var modelPicker: AXUIElement?

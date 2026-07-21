@@ -4,16 +4,17 @@
 [![Swift 5.9](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)](Package.swift)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-N Agent Bridge 是一个原生 macOS 工具，把受支持的 NuPhy 键盘变成 Codex Desktop 的实体控制台。它支持任务切换、批准/拒绝、听写、发送、推理深度旋钮，以及 F1–F6 六个任务的实时状态灯。
+N Agent Bridge 是一个原生 macOS 工具，把受支持的 NuPhy 键盘变成 Codex Desktop 的实体控制台。它支持稳定的 Agent 对话绑定、批准/拒绝、听写、发送、推理深度控制、任意实体键映射，以及已验证型号的六路实时状态灯。
 
 > 这是独立第三方开源项目，与 OpenAI、Codex 或 NuPhy 无隶属关系。
 
 ## 下载与安装
 
-当前可下载版本为 **0.10.1 Development**：
+当前可下载版本为 **0.11.5 Development**：
 
-- [下载最新测试版 DMG](https://github.com/bohu8264/N-Agent-Bridge/releases/tag/v0.10.1-development)
-- SHA-256：`7dbaaa7fdb8de43f61d970c5fde3330a9b1962f112ded49e57f4ee0d12525ed5`
+- [下载 0.11.5 测试版 DMG](https://github.com/bohu8264/N-Agent-Bridge/releases/download/v0.11.5-development/NAgentBridge-0.11.5-Development.dmg)
+- [查看 0.11.5 发布说明与源码包](https://github.com/bohu8264/N-Agent-Bridge/releases/tag/v0.11.5-development)
+- SHA-256：`ed5405920788f1883d85387eabbaee1312debe7788cf1f4feed4db14c9a944b7`
 
 安装步骤：
 
@@ -30,7 +31,7 @@ N Agent Bridge 是一个原生 macOS 工具，把受支持的 NuPhy 键盘变成
 
 | 实体控制 | Codex 动作 |
 | --- | --- |
-| F1–F6 | 切换前六个任务 |
+| Agent 1–6 | 按当前来源模式打开六个对话；单击后台切换，双击唤到前台 |
 | F7 | 切换 Fast Mode |
 | F8 / F9 | 批准 / 拒绝 |
 | F10 | 新建任务 |
@@ -38,7 +39,7 @@ N Agent Bridge 是一个原生 macOS 工具，把受支持的 NuPhy 键盘变成
 | F12 | 发送 |
 | 旋钮左转 / 按下 / 右转 | 降低推理深度 / 打开选择器 / 提高推理深度 |
 
-F1–F6 状态灯：
+六个 Agent 状态灯：
 
 - 白色：空闲
 - 蓝色：正在思考
@@ -46,24 +47,38 @@ F1–F6 状态灯：
 - 橙色：等待确认
 - 红色：发生错误
 
+Agent 对话来源支持 Codex Micro 官方的四种模式：最近对话、置顶对话、优先对话、自定义分配。所有模式都使用 Codex 对话 ID，而不是侧栏的临时位置，因此任务完成后重新置顶不会再让按键打开错误对话。自定义分配按 Codex 左侧栏的“项目 → 对话”层级选择；项目名、顺序和归属来自 Codex 本机状态，任务显示名使用 app-server 正式 `Thread.name`，会随 Codex 左侧栏实时更新。
+
+12 个动作都能学习到数字、字母、F 区或导航键。Air75 V3 上把 Agent 1–6 改到其他已知实体键时，`0xD8` 状态灯会跟随新的实体灯位。
+
 ## 硬件支持
 
-目前完整验证的型号只有 **NuPhy Air75 V3**。
+目前完整硬件验证的型号是 **NuPhy Air75 V3**。Air65 V3、Air100 V3、Kick75、Node75、Node100 已加入官方身份 Profile，可先使用不写固件的安全软件按键模式；各型号板载键位、侧灯和单键状态灯仍需分别实机回读验证后开放。
 
-| 连接方式 | 按键控制 | F1–F6 实时状态灯 | 说明 |
+| 型号 | 软件按键控制 | 板载专用层 / 状态灯 / 侧灯写入 |
+| --- | --- | --- |
+| Air75 V3 | 支持 | 已验证 |
+| Air65 V3 | 支持 | 待实机验证 |
+| Air100 V3 | 支持 | 待实机验证 |
+| Kick75 | 支持 | 待实机验证 |
+| Node75 | 支持 | 待实机验证 |
+| Node100 | 支持 | 待实机验证 |
+
+| 连接方式 | 按键控制 | Agent 实时状态灯 | 说明 |
 | --- | --- | --- | --- |
 | USB-C | 支持 | 支持 | 首次配置与恢复必须使用 |
 | 官方 U1 2.4G | 支持 | 支持 | 需要接收器/键盘固件转发配置命令 |
 | Bluetooth | 支持 | 暂不支持 | 当前固件没有可验证的实时灯光配置通道 |
 
-F1–F6 独立颜色需要包含 `0xD8 SetSignalLights` 的新版 Air75 V3 固件。应用不会向未知型号或未经验证的 HID 通道盲目写入数据。
+Agent 独立颜色需要包含 `0xD8 SetSignalLights` 的新版固件和对应型号的已验证灯位表。应用不会向未知型号或未经验证的 HID 通道盲目写入数据。
 
 其他 NuPhy 键盘可以继续适配，但必须先新增独立设备 Profile，并逐项完成实机读取、备份、写入、ACK、完整回读和恢复验证。详见 [新增 NuPhy 键盘型号](docs/ADDING-NUPHY-KEYBOARD.zh-CN.md)。
 
 ## 隐私与安全
 
 - 只识别受支持键盘和已映射的控制键，不记录普通文字、密码或聊天内容。
-- Codex 状态读取仅使用本地线程结构、事件类型和时间戳，不读取任务正文或回答正文。
+- Codex 状态读取仅使用本地线程 ID、app-server `Thread.name`、项目名称/顺序/归属、项目目录、事件类型和时间戳；`thread/list` 附带的首条消息预览会立即丢弃，不读取或保存任务正文与回答正文，所有数据只在本机使用。
+- Codex 可见确认卡只读取按钮标签和活动任务 ID，用于让精确 Agent 灯变橙；不读取确认问题或聊天正文。
 - 不保存 API Key，不复制 Codex 登录凭据，不上传 HID 报告。
 - 合成按键只定向发送给正在运行的 Codex Desktop。
 - 所有硬件写入都受型号 driver 白名单、备份、ACK、回读和失败恢复保护。

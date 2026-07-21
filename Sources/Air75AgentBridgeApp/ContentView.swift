@@ -265,7 +265,7 @@ struct OverviewView: View {
     let openSettings: () -> Void
 
     private var controlsReady: Bool {
-        store.configuration.hardwareProfileInstalled == true && store.codexDesktopKeybindingsInstalled
+        store.configuration.mappingMode != .unavailable && store.codexDesktopKeybindingsInstalled
     }
 
     private var permissionsReady: Bool {
@@ -284,7 +284,10 @@ struct OverviewView: View {
     }
 
     private var heroSubtitle: String {
-        if isReady { return "F1–F12、旋钮与任务状态灯正在与 Codex 协同工作。" }
+        if isReady, store.configuration.hardwareProfileInstalled == true {
+            return "自定义按键、旋钮与 Agent 状态灯正在与 Codex 协同工作。"
+        }
+        if isReady { return "自定义按键正在安全的软件模式下控制 Codex；未写入未经验证的键盘固件。" }
         if store.currentDevice == nil { return "打开键盘并连接蓝牙，首次设置请使用 USB-C。" }
         if !permissionsReady { return "完成系统权限后，按键只会控制 Codex。" }
         return "启用控制后，你的工作流会立即生效。"
@@ -357,7 +360,7 @@ struct OverviewView: View {
 
                 PremiumCard {
                     VStack(alignment: .leading, spacing: 0) {
-                        CardHeading(icon: "lightbulb.led", title: "Codex 状态灯", subtitle: "F1–F6 分别显示六个任务状态")
+                        CardHeading(icon: "lightbulb.led", title: "Codex 状态灯", subtitle: "六个 Agent 实体键分别显示任务状态")
                         HStack(spacing: 15) {
                             Circle()
                                 .fill(Color(hex: store.taskLightColorHex(for: store.codexTopTaskLightState)))
@@ -367,13 +370,14 @@ struct OverviewView: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(store.codexTopTaskLightState.displayName)
                                     .font(.title3.bold())
-                                Text(store.configuration.agentLightingEnabled == true ? "状态灯已开启" : "状态灯已关闭")
+                        Text(!store.signalLightingSupported ? "当前型号等待灯光驱动验证" : (store.configuration.agentLightingEnabled == true ? "状态灯已开启" : "状态灯已关闭"))
                                     .font(.caption)
                                 .foregroundStyle(.secondary)
                             }
                         }
                         .padding(.vertical, 6)
-                        SixTaskStatusRow(tasks: store.codexTasks, palette: store.configuration.resolvedTaskLightPalette)
+                        SixTaskStatusRow(tasks: store.codexTasks, palette: store.configuration.resolvedTaskLightPalette,
+                                         keyLabels: store.agentKeyLabels)
                             .padding(.top, 12)
                         HStack(spacing: 7) {
                             ForEach(CodexTaskLightState.allCases, id: \.self) { state in
@@ -431,10 +435,52 @@ struct ControlsView: View {
             }
 
             PremiumCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        CardHeading(icon: "rectangle.stack", title: "Agent 对话来源", subtitle: "按对话 ID 绑定，不再依赖侧栏位置")
+                        Spacer()
+                        Picker("对话来源", selection: Binding(
+                            get: { store.configuration.resolvedAgentSourceMode },
+                            set: { store.setAgentSourceMode($0) }
+                        )) {
+                            ForEach(CodexAgentSourceMode.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 150)
+                    }
+
+                    Text(store.configuration.resolvedAgentSourceMode.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if store.configuration.resolvedAgentSourceMode == .custom {
+                        Divider()
+                        Label("按 Codex 左侧栏的项目分组；每颗键绑定其中一个具体对话。",
+                              systemImage: "sidebar.left")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(0..<CodexAgentSlotResolver.slotCount, id: \.self) { index in
+                            HStack(spacing: 12) {
+                                Text(store.agentKeyLabels[index])
+                                    .font(.caption.monospaced())
+                                    .frame(width: 54, alignment: .leading)
+                                Text("Agent \(index + 1)")
+                                    .font(.subheadline.weight(.medium))
+                                Spacer()
+                                customAssignmentMenu(for: index)
+                            }
+                        }
+                    }
+                }
+            }
+
+            PremiumCard {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                     ForEach(Array(store.configuration.keyBindings.enumerated()), id: \.offset) { index, binding in
                         KeyActionRow(
-                            functionKey: "F\(index + 1)",
+                            functionKey: "\(index + 1)",
                             key: binding.displayName,
                             action: binding.action.displayName,
                             learning: store.learningBindingIndex == index,
@@ -483,6 +529,161 @@ struct ControlsView: View {
             }
         }
     }
+
+    private var assignableThreads: [CodexTaskLightSnapshot] {
+        store.codexThreadCandidates.filter { $0.threadID != nil }
+    }
+
+    private var assignableThreadGroups: [CodexThreadProjectGroup] {
+        var groups: [String: CodexThreadProjectGroup] = [:]
+        for thread in assignableThreads {
+            let key: String
+            let name: String
+            if let projectID = thread.projectID, !projectID.isEmpty {
+                key = projectID
+                name = thread.projectName?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+                    ?? "未命名项目"
+            } else {
+                key = "projectless"
+                name = "其他对话"
+            }
+            if var group = groups[key] {
+                group.threads.append(thread)
+                group.order = min(group.order, thread.projectOrder ?? Int.max)
+                groups[key] = group
+            } else {
+                groups[key] = CodexThreadProjectGroup(
+                    id: key,
+                    name: name,
+                    order: thread.projectOrder ?? Int.max,
+                    threads: [thread]
+                )
+            }
+        }
+        return groups.values.map { group in
+            var sorted = group
+            sorted.threads.sort {
+                if $0.recencyAtMS != $1.recencyAtMS { return $0.recencyAtMS > $1.recencyAtMS }
+                return normalizedThreadTitle($0) < normalizedThreadTitle($1)
+            }
+            return sorted
+        }.sorted {
+            if $0.id == "projectless" { return false }
+            if $1.id == "projectless" { return true }
+            if $0.order != $1.order { return $0.order < $1.order }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private func normalizedThreadTitle(_ thread: CodexTaskLightSnapshot) -> String {
+        if let title = thread.title {
+            let normalized = title.components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            if !normalized.isEmpty { return normalized }
+        }
+        return thread.threadID.map { "对话 …\($0.suffix(8))" } ?? "未命名对话"
+    }
+
+    private func compactThreadTitle(_ thread: CodexTaskLightSnapshot, limit: Int = 46) -> String {
+        let title = normalizedThreadTitle(thread)
+        guard title.count > limit else { return title }
+        return String(title.prefix(limit - 1)) + "…"
+    }
+
+    private func projectName(for thread: CodexTaskLightSnapshot) -> String {
+        if let name = thread.projectName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return name
+        }
+        if let path = thread.projectPath?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty {
+            return URL(fileURLWithPath: path).lastPathComponent
+        }
+        return "其他对话"
+    }
+
+    private func assignedThread(_ index: Int) -> CodexTaskLightSnapshot? {
+        guard let id = store.assignedThreadID(
+            for: index,
+            mode: store.configuration.resolvedAgentSourceMode
+        ) else { return nil }
+        return store.codexThreadCandidates.first(where: { $0.threadID == id })
+    }
+
+    private func assignedThreadFallbackTitle(_ index: Int) -> String? {
+        guard let id = store.assignedThreadID(
+            for: index,
+            mode: store.configuration.resolvedAgentSourceMode
+        ) else { return nil }
+        return "对话 …\(id.suffix(8))"
+    }
+
+    private func customAssignmentMenu(for index: Int) -> some View {
+        let selection = assignedThread(index)
+        let assignedID = store.assignedThreadID(
+            for: index,
+            mode: store.configuration.resolvedAgentSourceMode
+        )
+        return Menu {
+            Button {
+                store.assignThread(nil, to: index, for: store.configuration.resolvedAgentSourceMode)
+            } label: {
+                if assignedID == nil {
+                    Label("不分配", systemImage: "checkmark")
+                } else {
+                    Text("不分配")
+                }
+            }
+            Divider()
+            ForEach(assignableThreadGroups) { group in
+                Menu(group.name) {
+                    ForEach(group.threads, id: \.threadID) { thread in
+                        Button {
+                            store.assignThread(thread.threadID, to: index,
+                                               for: store.configuration.resolvedAgentSourceMode)
+                        } label: {
+                            if assignedID == thread.threadID {
+                                Label(compactThreadTitle(thread), systemImage: "checkmark")
+                            } else {
+                                Text(compactThreadTitle(thread))
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 7) {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(selection.map(projectName) ?? (assignedID == nil ? "未分配" : "原对话"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Text(selection.map { compactThreadTitle($0, limit: 34) }
+                         ?? assignedThreadFallbackTitle(index)
+                         ?? "选择对话")
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .frame(width: 300, alignment: .trailing)
+        .help(selection.map(normalizedThreadTitle) ?? assignedThreadFallbackTitle(index) ?? "选择一个 Codex 对话")
+    }
+}
+
+private struct CodexThreadProjectGroup: Identifiable {
+    let id: String
+    let name: String
+    var order: Int
+    var threads: [CodexTaskLightSnapshot]
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }
 
 private struct KeyActionRow: View {
@@ -662,7 +863,7 @@ struct LightingView: View {
             PremiumCard {
                 VStack(alignment: .leading, spacing: 20) {
                     HStack(alignment: .top) {
-                        CardHeading(icon: "bolt.horizontal.circle", title: "Codex 任务状态灯", subtitle: "F1–F6 分别显示六个任务，不改变普通侧灯")
+                        CardHeading(icon: "bolt.horizontal.circle", title: "Codex 任务状态灯", subtitle: "六个 Agent 实体键分别显示任务，不改变普通侧灯")
                         Spacer()
                         Toggle("", isOn: Binding(
                             get: { store.configuration.agentLightingEnabled == true },
@@ -686,7 +887,8 @@ struct LightingView: View {
                             Spacer()
                         }
 
-                        SixTaskStatusRow(tasks: store.codexTasks, palette: store.configuration.resolvedTaskLightPalette)
+                        SixTaskStatusRow(tasks: store.codexTasks, palette: store.configuration.resolvedTaskLightPalette,
+                                         keyLabels: store.agentKeyLabels)
 
                         Divider()
 
@@ -707,7 +909,7 @@ struct LightingView: View {
                                     )
                                 }
                             }
-                            Text("颜色会保存在本机；通过 USB-C 或支持新协议的 2.4G 接收器连接时只写入 F1–F6。")
+                            Text("颜色会保存在本机；已验证型号通过 USB-C 或 2.4G 把状态写到 Agent 当前所在实体键。")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -744,6 +946,22 @@ struct LightingView: View {
                                     .font(.caption.monospacedDigit())
                                     .foregroundStyle(.secondary)
                                     .frame(width: 38, alignment: .trailing)
+                            }
+                            HStack(spacing: 12) {
+                                Text("常亮颜色")
+                                    .font(.subheadline.weight(.medium))
+                                ForEach(backlightColors, id: \.hex) { item in
+                                    Button {
+                                        store.setSidelightStaticColor(hex: item.hex)
+                                    } label: {
+                                        Circle()
+                                            .fill(Color(hex: item.hex))
+                                            .frame(width: 24, height: 24)
+                                            .overlay(Circle().stroke(Color.primary.opacity(0.16)))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("侧灯 · \(item.name)")
+                                }
                             }
                     }
                     .disabled(!store.lightingAvailable || store.lightingBusy)
@@ -809,14 +1027,14 @@ struct LightingView: View {
         if !store.lightingAvailable { return store.lightingMessage }
         switch store.lightingConnection {
         case .twoPointFourGHzReceiver:
-            return "F1–F6 任务状态正通过 2.4G 接收器同步；普通侧灯保持键盘原灯效。"
+            return "Agent 实体键状态正通过 2.4G 接收器同步；普通侧灯保持用户灯效。"
         case .usbCable:
-            return "F1–F6 任务状态正通过 USB-C 同步；普通侧灯保持键盘原灯效。"
+            return "Agent 实体键状态正通过 USB-C 同步；普通侧灯保持用户灯效。"
         case nil:
             if store.devices.contains(where: { $0.isRecognized && $0.transports.contains(.bluetooth) }) {
-                return "蓝牙按键可用，但当前固件没有 F1–F6 实时灯光通道；请使用 USB-C 或 2.4G。"
+                return "蓝牙按键可用，但当前固件没有实时状态灯通道；请使用 USB-C 或 2.4G。"
             }
-            return "F1–F6 实时状态需要 USB-C，或支持新协议的 2.4G 接收器。"
+            return "实时状态灯需要 USB-C，或支持新协议的 2.4G 接收器。"
         }
     }
 
@@ -831,16 +1049,18 @@ struct LightingView: View {
     }
 }
 
-/// F1–F6 对应 Codex 侧栏任务 1–6；软件预览与固件 D8 指示灯索引保持一致。
+/// Six stable Agent slots; labels and firmware D8 positions follow the user's
+/// current physical key bindings.
 struct SixTaskStatusRow: View {
     let tasks: [CodexTaskLightSnapshot]
     let palette: CodexTaskLightPalette
+    let keyLabels: [String]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 ForEach(0..<CodexDesktopStatusObserver.maximumTaskCount, id: \.self) { index in
-                    let snapshot = index < tasks.count ? tasks[index] : nil
+                    let snapshot = index < tasks.count && tasks[index].threadID != nil ? tasks[index] : nil
                     VStack(spacing: 5) {
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
                             .fill(snapshot.map { Color(hex: palette.colorHex(for: $0.state)) } ?? Color.primary.opacity(0.08))
@@ -853,14 +1073,14 @@ struct SixTaskStatusRow: View {
                                 color: snapshot.map { Color(hex: palette.colorHex(for: $0.state)).opacity(0.35) } ?? .clear,
                                 radius: 5
                             )
-                        Text("F\(index + 1)")
+                        Text(index < keyLabels.count ? keyLabels[index] : "—")
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(.secondary)
                     }
                     .help(snapshot.map { "任务 \(index + 1)：\($0.state.displayName)" } ?? "任务 \(index + 1)：未分配")
                 }
             }
-            Text("F1–F6 对应 Codex 侧栏任务 1–6；颜色与任务状态实时同步")
+            Text("六个 Agent 键按当前来源模式绑定；改键后状态灯会跟随实体位置")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -915,10 +1135,20 @@ struct SettingsView: View {
                     )
                     Divider()
                     SettingsValueRow(
+                        title: "型号能力",
+                        value: store.currentCapabilitySummary,
+                        good: store.currentDevice != nil,
+                        buttonTitle: nil,
+                        action: nil
+                    )
+                    Divider()
+                    SettingsValueRow(
                         title: "Codex 控制",
                         value: store.configuration.enabled ? "已开启" : "已暂停",
                         good: store.configuration.enabled,
-                        buttonTitle: store.configuration.enabled ? "停止并恢复" : "启用",
+                        buttonTitle: store.configuration.enabled
+                            ? (store.configuration.hardwareProfileInstalled == true ? "停止并恢复" : "停止")
+                            : "启用",
                         action: { store.configuration.enabled ? store.disable() : store.oneClickEnable() }
                     )
                     Divider()
@@ -1227,7 +1457,7 @@ private let backlightColors: [(hex: String, name: String)] = [
 ]
 
 private var appVersion: String {
-    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.9.9"
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.5"
 }
 
 private func deviceConnectionText(_ device: DeviceSnapshot?) -> String {

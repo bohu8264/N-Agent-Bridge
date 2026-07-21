@@ -1,16 +1,16 @@
 # N Agent Bridge — AI 接手说明
 
-更新时间：2026-07-20（Asia/Shanghai）
+更新时间：2026-07-21（Asia/Shanghai）
 
 ## 1. 项目目标
 
 这是一个面向 NuPhy 键盘的原生 macOS SwiftUI 菜单栏应用，把受支持型号的实体控制中继到当前 Codex Desktop。型号 Profile 与硬件写入 driver 分离；当前完整验证 Air75 V3，未知型号默认只有安全识别能力，不记录普通文字输入，不冒充 OpenAI 官方硬件，也不猜测未知固件写入协议。
 
-当前开发版：`0.10.1 (26)`（适配新固件 `0xD8 SetSignalLights`，F1–F6 分别显示六个 Codex 任务状态；索引已按实机修正为 1–6，Esc 索引 0 会被清除。Codex 不再接管侧灯，侧灯恢复并保持官方灯效）。
+当前开发版：`0.11.5 (32)`（自定义分配改用 Codex app-server `thread/list` 的正式 `Thread.name`，与左侧栏实时任务名一致；继承 0.11.3 的可见确认卡橙灯与六任务状态灯）。
 
 - 源码根目录：本文件所在目录
-- 当前本机制品：`dist/N Agent Bridge.app`、`dist/NAgentBridge-0.10.1-Development.dmg`（Universal 本机自签验证包，只用于已知来源测试）
-- 当前安装位置：`/Applications/N Agent Bridge.app`
+- 0.11.5 已完成 Debug 编译、software-only SelfTest、真实 `thread/list` 标题验证、Universal Release、固定签名、DMG CRC/结构验证与原位安装。制品为 `dist/NAgentBridge-0.11.5-Development.dmg`，SHA-256：`ed5405920788f1883d85387eabbaee1312debe7788cf1f4feed4db14c9a944b7`。
+- 当前安装位置：`/Applications/N Agent Bridge.app`，版本 `0.11.5 (32)`；固定签名与 Designated Requirement 已复核，标题同步子进程正在运行
 - 当前签名：固定本机身份 `N Agent Bridge Local Signing`，Bundle ID `com.nagentbridge.mac`；不是 Developer ID/Apple 公证的公开发行签名
 
 ## 2. 接手后先读
@@ -34,8 +34,10 @@
 
 - `Sources/Air75AgentBridgeApp/BridgeStore.swift`：应用状态编排、权限、按键动作、灯光同步
 - `Sources/Air75AgentBridgeApp/ContentView.swift`：四页 SwiftUI 产品界面
-- `Sources/Air75AgentBridgeApp/CodexDesktopRelay.swift`：向当前 Codex Desktop 定向发送原生快捷键
-- `Sources/Air75AgentBridgeApp/CodexDesktopStatusObserver.swift`：读取本地线程索引和 rollout 事件，分别跟踪前六个用户任务
+- `Sources/Air75AgentBridgeApp/CodexDesktopRelay.swift`：向当前 Codex Desktop 定向发送原生快捷键，并通过 `codex://threads/<id>` 打开稳定对话
+- `Sources/Air75AgentBridgeApp/CodexDesktopStatusObserver.swift`：读取本地线程索引和 rollout 事件，并合并实时确认状态，分别跟踪六个用户任务
+- `Sources/Air75AgentBridgeApp/CodexDesktopTitleObserver.swift`：只读调用 Codex app-server `thread/list`，只转发线程 ID 与最终 `Thread.name`
+- `Sources/Air75AgentBridgeApp/CodexDesktopConfirmationObserver.swift`：只读 Codex 按钮语义和活动 `conversationId`，识别 rollout 不记录的可见确认卡
 - `Sources/Air75AgentBridgeApp/DedicatedKeyEventSuppressor.swift`：消费 F13–F24，防止同时触发系统亮度等功能
 - `Sources/Air75AgentBridgeCore/HID/HIDDeviceManager.swift`：Air75 HID 发现、输入监控和隐私过滤
 - `Sources/Air75AgentBridgeCore/Device/DeviceProfileRegistry.swift`：加载全部型号 Profile 并选择匹配设备
@@ -45,6 +47,7 @@
 - `Sources/Air75AgentBridgeCore/Lighting/Air75V3LightingController.swift`：NuPhyIO USB 灯光协议
 - `Sources/Air75AgentBridgeCore/Power/KeyboardSleepConfiguration.swift`：键盘自动休眠三字节配置的严格解析与编码
 - `Sources/Air75AgentBridgeCore/Codex/CodexTaskLightState.swift`：五状态解析和颜色映射
+- `Sources/Air75AgentBridgeCore/Lighting/SignalLightLayout.swift`：已验证型号的实体 Usage → D8 灯位映射
 - `Sources/Air75AgentBridgeCore/Resources/DeviceProfiles/Air75V3.json`：实际参与打包的设备识别资源；不要用根目录重复副本
 - `Sources/Air75ProtocolProbe/main.swift`：硬件协议读取和受保护的实机验证
 - `Sources/Air75CoreSelfTest/main.swift`：无 XCTest 环境下的核心自测
@@ -70,7 +73,11 @@
 - 停止控制必须先通过 USB-C 恢复原始 1568-byte 键位并完整回读。历史备份中较新的多份已经是 Bridge Profile，恢复器必须用 `hasBridgeProfile` 跳过，当前可验证原始备份为 `2026-07-19T02-31-31Z-hardware-keymap.json`。
 - `GetLightCount (0xD1)`、`GetKeyLightColor (0xD2)` 只读已实机验证：104 LED = 84 键（0–83）+ 20 侧灯（84–103），312 字节 RGB。
 - 旧固件没有单键颜色写入；2026-07-20 的新固件新增 `0xD8 SetSignalLights`。24-byte 六灯写入、8-bit 校验和、完整 ACK 和实机索引 1–6 均已验证；索引 0 是 Esc，不得再次把 F1 映射到 0。
-- 六任务状态来源 `~/.codex/state_<N>.sqlite` threads 表（只读、只查结构列），每任务独立解析 rollout 尾部；rollout 中没有审批类事件，"待确认"状态需后续接 app-server RPC。
+- 六任务状态来源 `~/.codex/state_<N>.sqlite` threads 表（只读、只查结构列），每任务独立解析 rollout 尾部。0.11.3 对 rollout 不记录的 MCP 安装/审批卡，额外只读当前 Codex 窗口按钮角色，并用 Desktop 日志中的活动 `conversationId` 精确覆盖为橙色；不读取聊天正文。
+- 0.11.0 查询线程 ID、标题、cwd、recency 与本机未读 ID；不查询提示词、回答或预览。四种 Agent 来源模式最终都绑定线程 ID，不再把 Command+1...6/侧栏位置当身份。
+- 0.11.2 自定义分配额外只读 Codex 全局状态中的 `local-projects`、`project-order` 与 `thread-project-assignments` 结构字段，以 Codex 自己的项目层级展示最多 500 个未归档用户对话。0.11.4 读取 `thread-descriptions-v1` 仍会遗漏主任务；0.11.5 已改为 app-server `thread/list(useStateDbOnly: true)` 的正式 `Thread.name`，持久化短描述和 SQLite `title` 仅作兼容兜底。状态解析仍只处理最近 50 个及置顶/自定义精确 ID。
+- Air75 V3 ANSI 的 NuPhyIO 可见键顺序与 `skipPos=14/skipSize=3` 已编码为灯位表：例如 F1 = 1、数字 1 = 16。Agent 动作学习到新实体键后，灯位随绑定保存和交换。
+- Air65 V3、Air100 V3、Kick75、Node75、Node100 的官方应用 PID/别名已加入 Profile；当前只开放软件按键模式。没有实机备份/ACK/回读前，不给这些 Profile 注册硬件 driver。
 - 其他配置器（NuPhyIO 等）会通过 `SetSecretKey (0xEE)` 给固件设置 XOR 会话密钥，导致本应用读到稳定乱码；控制器已内置 sessionKeyConflict 检测。诊断"灯光状态无效"时先想到这一点，不要先怀疑硬件。
 - 官方 U1 2.4G 接收器 VID `0x19F5` / PID `0x2620` 暴露同一 S4 配置通道；用户实机已经枚举到 usage `1:0`、64-byte Input/Output。0.9.8 在数据线拔除、只保留 U1 时完成 D5/D6 状态侧灯写入、ACK 与回读，推理蓝色已验证；A1/F3 是否由接收器转发不再影响 RGB 就绪。蓝牙无官方配置通道（bleConnectionConfig=null）；当前固件不可能由普通 macOS 应用实时写侧灯 RGB。
 - 运行 SelfTest 或 Probe 的硬件测试前必须先从菜单栏退出正在运行的 N Agent Bridge；两个进程并发访问 vendor 通道会互相污染响应。
@@ -101,12 +108,14 @@
 - [ ] 安装 0.9.0 后实测：数字键自定义不会同时输入字符；停止并恢复成功提示后拔线，F 区与旋钮回到键盘原生功能。
 - [x] 修复 F1 被学习为 `P07/UFFFFFFFF` 后任意打字跳转任务 1；真实配置已迁移为 F13（usage `0x68`），F2–F12 自定义绑定保持不变。
 
-### P1 — F1–F6 六任务状态灯
+### P1 — 六个 Agent 任务与状态灯
 
 - [x] 软件侧把 `CodexDesktopStatusObserver` 从单个最近任务扩展为最多六个用户任务快照（state_<N>.sqlite threads 表 + 每任务 rollout 解析）。
 - [x] 在 UI 中显示六路状态（概览与灯光页 SixTaskStatusRow），侧灯改为聚合策略并有自测。
-- [ ] 用 Codex UI 实测 Command+1..6 顺序与 recency 排序的一致性（侧栏 mode="project" 时可能错位，见 BLOCKERS.md #6）。
-- [ ] "待确认"状态接入 app-server RPC 审批信号（rollout 文件中没有审批事件）。
+- [x] 删除 Command+1..6 与 recency 可见顺序强关联；四种模式使用稳定线程 ID 和 `codex://threads/<id>`。
+- [ ] 实机验收单击后台切换、350ms 内双击前台显示，以及自定义空槽自动绑定新对话。
+- [x] 当前可见的 MCP 安装/审批确认卡通过辅助功能按钮语义与活动线程 ID 映射为橙灯，处理后自动恢复。
+- [ ] 后台未渲染任务的确认状态仍等待 Codex Desktop 提供可共享 app-server/正式事件接口。
 - [x] 旧固件能力调查完成，0xD1/0xD2 只读实机打通；新固件 `0xD8` 六灯写入、ACK、实机布局与 F1–F6 状态同步均已验证。
 - [x] 修正 `0 = Esc、1–6 = F1–F6`，并让 Codex 任务灯与官方侧灯灯效完全分离。
 
@@ -126,6 +135,8 @@
 - [ ] 为六任务状态排序、过期、完成保持 60 秒、报错保持 120 秒补充测试。
 - [ ] 在干净 Mac 做拖拽安装、首次授权、Codex 重启、登录启动、升级和卸载验收。
 - [x] 把新固件 `0xD8`、实机索引和侧灯恢复结论同步到 `docs/LIGHTING-PROTOCOL.md`。
+- [x] 加入 Air65 V3、Air100 V3、Kick75、Node75、Node100 官方身份 Profile 与软件模式能力分级。
+- [ ] 分别拿到五个型号实机后，逐型号验证板载键位长度、D5/D6、D8 灯位、U1 路由和恢复，验证一个注册一个 driver。
 
 ## 7. 构建与验证
 

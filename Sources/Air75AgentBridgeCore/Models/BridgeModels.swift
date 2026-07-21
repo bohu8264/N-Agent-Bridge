@@ -69,6 +69,35 @@ public enum KnobMode: String, Codable, CaseIterable, Sendable {
     case custom
 }
 
+/// Mirrors the four Agent-key source modes exposed by Codex Micro. Thread
+/// identity, rather than sidebar position, is the stable unit in every mode.
+public enum CodexAgentSourceMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case recent
+    case pinned
+    case priority
+    case custom
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .recent: return "最近对话"
+        case .pinned: return "置顶对话"
+        case .priority: return "优先对话"
+        case .custom: return "自定义分配"
+        }
+    }
+
+    public var detail: String {
+        switch self {
+        case .recent: return "跟随最近更新的六个对话；按键始终打开灯光当前对应的对话。"
+        case .pinned: return "跟随 Codex 置顶列表中的前六个对话，不受最近活动重新排序影响。"
+        case .priority: return "需要确认、未读和正在工作的对话优先，其余按最近活动排序。"
+        case .custom: return "每颗 Agent 键固定绑定一个对话；空键按下后会新建并自动绑定。"
+        }
+    }
+}
+
 public enum BridgeAction: String, Codable, CaseIterable, Sendable {
     case agent1, agent2, agent3, agent4, agent5, agent6
     case quickAction, approve, decline, newChat, pushToTalk, send
@@ -242,11 +271,16 @@ public struct KeyBinding: Identifiable, Codable, Hashable, Sendable {
     public var usagePage: Int
     public var usage: Int
     public var action: BridgeAction
+    /// Firmware signal-light index for this physical key. It is deliberately
+    /// stored with the binding so moving an Agent action also moves its light.
+    /// Unknown models/locations remain nil until a verified layout is present.
+    public var signalLightIndex: Int?
 
-    public init(usagePage: Int, usage: Int, action: BridgeAction) {
+    public init(usagePage: Int, usage: Int, action: BridgeAction, signalLightIndex: Int? = nil) {
         self.usagePage = usagePage
         self.usage = usage
         self.action = action
+        self.signalLightIndex = signalLightIndex
     }
 
     /// Sources that the app can both recognize and isolate with its macOS
@@ -337,7 +371,7 @@ public struct LightingCapabilities: Codable, Sendable {
 }
 
 public struct BridgeConfiguration: Codable, Sendable {
-    public var schemaVersion = 8
+    public var schemaVersion = 9
     public var hasCompletedOnboarding = false
     public var enabled = false
     public var codexModeEnabled = false
@@ -360,7 +394,7 @@ public struct BridgeConfiguration: Codable, Sendable {
     public var launchAtLogin = false
     public var overlayEnabled = false
     /// Schema 8 keeps this field name for configuration compatibility, but it
-    /// now controls only the six F1-F6 task indicator lights.
+    /// now controls only the six Agent-key task indicator lights.
     public var agentLightingEnabled: Bool? = true
     /// Schema 7 and older continuously replaced the user's sidelight with an
     /// aggregate Codex color. Upgrades restore the earliest hardware backup
@@ -369,6 +403,13 @@ public struct BridgeConfiguration: Codable, Sendable {
     /// Optional so schema 1-4 configuration files continue to decode before
     /// migration. Callers should use `resolvedTaskLightPalette`.
     public var taskLightPalette: CodexTaskLightPalette? = .default
+    /// Optional for schema 1-8 decoding. Callers use `resolvedAgentSourceMode`.
+    public var agentSourceMode: CodexAgentSourceMode? = .recent
+    /// Six exact thread IDs, one for each physical Agent action.
+    public var customAgentThreadIDs: [String?]?
+    /// Legacy fallback for Codex builds that do not expose the ordered
+    /// `pinned-thread-ids` field in local desktop state.
+    public var pinnedAgentThreadIDs: [String?]?
     public var lighting = LightingCapabilities()
 
     public init() {}
@@ -377,10 +418,25 @@ public struct BridgeConfiguration: Codable, Sendable {
         taskLightPalette ?? .default
     }
 
+    public var resolvedAgentSourceMode: CodexAgentSourceMode {
+        agentSourceMode ?? .recent
+    }
+
+    public var resolvedCustomAgentThreadIDs: [String?] {
+        Array((customAgentThreadIDs ?? []).prefix(6)) + Array(repeating: nil, count: max(0, 6 - (customAgentThreadIDs ?? []).count))
+    }
+
+    public var resolvedPinnedAgentThreadIDs: [String?] {
+        Array((pinnedAgentThreadIDs ?? []).prefix(6)) + Array(repeating: nil, count: max(0, 6 - (pinnedAgentThreadIDs ?? []).count))
+    }
+
     public static let defaultBindings: [KeyBinding] = {
         let actions: [BridgeAction] = [.agent1, .agent2, .agent3, .agent4, .agent5, .agent6,
                                       .quickAction, .approve, .decline, .newChat, .pushToTalk, .send]
-        return zip(0x3A...0x45, actions).map { KeyBinding(usagePage: 0x07, usage: $0.0, action: $0.1) }
+        return zip(0x3A...0x45, actions).enumerated().map {
+            KeyBinding(usagePage: 0x07, usage: $0.element.0, action: $0.element.1,
+                       signalLightIndex: $0.offset + 1)
+        }
     }()
 
     /// The board profile turns the *physical* F1-F12 row into F13-F24. The app's
@@ -389,7 +445,10 @@ public struct BridgeConfiguration: Codable, Sendable {
     public static let hardwareProfileBindings: [KeyBinding] = {
         let actions: [BridgeAction] = [.agent1, .agent2, .agent3, .agent4, .agent5, .agent6,
                                       .quickAction, .approve, .decline, .newChat, .pushToTalk, .send]
-        return zip(0x68...0x73, actions).map { KeyBinding(usagePage: 0x07, usage: $0.0, action: $0.1) }
+        return zip(0x68...0x73, actions).enumerated().map {
+            KeyBinding(usagePage: 0x07, usage: $0.element.0, action: $0.element.1,
+                       signalLightIndex: $0.offset + 1)
+        }
     }()
 
     /// Converts only the physical F-row source usages. User-learned number,
@@ -399,7 +458,8 @@ public struct BridgeConfiguration: Codable, Sendable {
             guard binding.usagePage == 0x07, (0x3A...0x45).contains(binding.usage) else { return binding }
             return KeyBinding(usagePage: binding.usagePage,
                               usage: binding.usage + (0x68 - 0x3A),
-                              action: binding.action)
+                              action: binding.action,
+                              signalLightIndex: binding.signalLightIndex)
         }
     }
 
@@ -408,7 +468,8 @@ public struct BridgeConfiguration: Codable, Sendable {
             guard binding.usagePage == 0x07, (0x68...0x73).contains(binding.usage) else { return binding }
             return KeyBinding(usagePage: binding.usagePage,
                               usage: binding.usage - (0x68 - 0x3A),
-                              action: binding.action)
+                              action: binding.action,
+                              signalLightIndex: binding.signalLightIndex)
         }
     }
 
@@ -489,11 +550,14 @@ public struct KeyboardHardwareCapabilities: Codable, Equatable, Sendable {
     public var hasKnob: Bool
     public var hasSidelight: Bool
     public var supportsWirelessConfiguration: Bool
+    /// Identifies a verified physical-key to D8 signal-light layout.
+    public var signalLightLayoutID: String?
 
     public init(keymapDriverID: String? = nil, lightingDriverID: String? = nil,
                 sleepDriverID: String? = nil,
                 keymapByteCount: Int? = nil, hasKnob: Bool = false,
-                hasSidelight: Bool = false, supportsWirelessConfiguration: Bool = false) {
+                hasSidelight: Bool = false, supportsWirelessConfiguration: Bool = false,
+                signalLightLayoutID: String? = nil) {
         self.keymapDriverID = keymapDriverID
         self.lightingDriverID = lightingDriverID
         self.sleepDriverID = sleepDriverID
@@ -501,6 +565,7 @@ public struct KeyboardHardwareCapabilities: Codable, Equatable, Sendable {
         self.hasKnob = hasKnob
         self.hasSidelight = hasSidelight
         self.supportsWirelessConfiguration = supportsWirelessConfiguration
+        self.signalLightLayoutID = signalLightLayoutID
     }
 }
 

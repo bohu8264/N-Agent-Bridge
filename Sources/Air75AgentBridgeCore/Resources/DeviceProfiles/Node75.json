@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 2,
+  "id": "nuphy.node75",
+  "model": "NuPhy Node75",
+  "protocolFamily": "nuphyS4",
+  "capabilities": {
+    "hasKnob": true,
+    "hasSidelight": true,
+    "supportsWirelessConfiguration": false
+  },
+  "usbIdentities": [
+    { "vendorID": 6645, "productID": 4144 },
+    { "vendorID": 6645, "productID": 4145 },
+    { "vendorID": 6645, "productID": 4146 },
+    { "vendorID": 6645, "productID": 4147 },
+    { "vendorID": 6645, "productID": 4148 },
+    { "vendorID": 6645, "productID": 4149 },
+    { "vendorID": 6645, "productID": 9760 }
+  ],
+  "bluetoothVendorIDs": [2007, 6645],
+  "productAliases": ["Node75", "Node75 Low", "Node75 High", "Node75 ISO", "Node75 JIS", "Node75-1", "Node75-2", "Node75-3", "NuPhy Node75 Dongle"],
+  "manufacturerAliases": ["NuPhy", "NuPhy Keyboard", "NuPhy Keybord"],
+  "allowedUsagePages": [1, 7, 12, 65280, 65376, 65535],
+  "specialUsages": [58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69]
+}

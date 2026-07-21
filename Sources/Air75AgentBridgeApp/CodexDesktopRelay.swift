@@ -9,12 +9,14 @@ final class CodexDesktopRelay {
         case accessibilityDenied
         case codexNotRunning
         case eventCreationFailed
+        case invalidThreadLink
 
         var errorDescription: String? {
             switch self {
             case .accessibilityDenied: return "需要在系统设置中允许 N Agent Bridge 使用辅助功能"
             case .codexNotRunning: return "Codex Desktop 尚未运行"
             case .eventCreationFailed: return "无法创建发送给 Codex 的键盘事件"
+            case .invalidThreadLink: return "无法生成 Codex 对话链接"
             }
         }
     }
@@ -73,6 +75,42 @@ final class CodexDesktopRelay {
         default:
             return
         }
+    }
+
+    /// Opens a stable Codex thread identity instead of relying on the current
+    /// visual position of the sidebar. A single Agent-key press can switch in
+    /// the background; the second press asks macOS to activate Codex.
+    func openThread(_ threadID: String, activate: Bool) throws {
+        guard Self.accessibilityGranted else { throw RelayError.accessibilityDenied }
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").first,
+              let appURL = app.bundleURL else { throw RelayError.codexNotRunning }
+        guard let encoded = threadID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "codex://threads/\(encoded)") else {
+            throw RelayError.invalidThreadLink
+        }
+        open(url, with: appURL, activate: activate)
+    }
+
+    func openNewThread(activate: Bool) throws {
+        guard Self.accessibilityGranted else { throw RelayError.accessibilityDenied }
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").first,
+              let appURL = app.bundleURL,
+              let url = URL(string: "codex://threads/new") else { throw RelayError.codexNotRunning }
+        open(url, with: appURL, activate: activate)
+    }
+
+    func activateCodex() throws {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").first else {
+            throw RelayError.codexNotRunning
+        }
+        app.activate(options: [.activateAllWindows])
+    }
+
+    private func open(_ url: URL, with appURL: URL, activate: Bool) {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = activate
+        configuration.addsToRecentItems = false
+        NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: configuration)
     }
 
     private func post(keyCode: CGKeyCode, flags: CGEventFlags, to app: NSRunningApplication) throws {

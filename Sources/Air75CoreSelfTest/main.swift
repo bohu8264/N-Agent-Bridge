@@ -9,17 +9,26 @@ if let argumentIndex = CommandLine.arguments.firstIndex(of: "--verify-app-bundle
         fputs("Invalid app bundle: \(appPath)\n", stderr)
         exit(EXIT_FAILURE)
     }
-    let profileURL = appBundle.resourceURL?
+    let expectedProfiles = [
+        ("Air75V3.json", "nuphy.air75-v3"),
+        ("Air65V3.json", "nuphy.air65-v3"),
+        ("Air100V3.json", "nuphy.air100-v3"),
+        ("Kick75.json", "nuphy.kick75"),
+        ("Node75.json", "nuphy.node75"),
+        ("Node100.json", "nuphy.node100")
+    ]
+    let profileBundleURL = appBundle.resourceURL?
         .appendingPathComponent("Air75AgentBridge_Air75AgentBridgeCore.bundle", isDirectory: true)
-        .appendingPathComponent("Air75V3.json")
-    guard let profileURL,
-          let profileData = try? Data(contentsOf: profileURL),
-          let packagedProfile = try? JSONDecoder().decode(DeviceProfile.self, from: profileData),
-          packagedProfile.profileID == "nuphy.air75-v3",
-          DeviceProfileRegistry.loadBundled(applicationBundle: appBundle)
-            .profile(id: "nuphy.air75-v3") != nil else {
-        fputs("Packaged device profile could not be loaded from \(appPath)\n", stderr)
-        exit(EXIT_FAILURE)
+    let registry = DeviceProfileRegistry.loadBundled(applicationBundle: appBundle)
+    for (filename, profileID) in expectedProfiles {
+        guard let profileURL = profileBundleURL?.appendingPathComponent(filename),
+              let profileData = try? Data(contentsOf: profileURL),
+              let packagedProfile = try? JSONDecoder().decode(DeviceProfile.self, from: profileData),
+              packagedProfile.profileID == profileID,
+              registry.profile(id: profileID) != nil else {
+            fputs("Packaged device profile \(profileID) could not be loaded from \(appPath)\n", stderr)
+            exit(EXIT_FAILURE)
+        }
     }
     print("APP BUNDLE RESOURCE TEST PASSED")
     exit(EXIT_SUCCESS)
@@ -212,8 +221,47 @@ check(d8Example == [0x00, 0xFF, 0x00, 0x00, 0x01, 0x00, 0xFF, 0x00],
       "D8 signal light payload matches firmware protocol")
 check(Air75V3LightingController.taskSignalLightIndices == [1, 2, 3, 4, 5, 6],
       "Air75 V3 F1-F6 use firmware indicator indexes 1-6; index 0 is Esc")
+check(SignalLightLayout.index(layoutID: "nuphy.air75-v3.ansi-d8", usagePage: 0x07, usage: 0x1E) == 16,
+      "Air75 V3 number 1 resolves to official-layout light index")
+check(SignalLightLayout.index(layoutID: "nuphy.air75-v3.ansi-d8", usagePage: 0x07, usage: 0x68) == 1,
+      "Air75 V3 Bridge F13 source resolves to physical F1 light")
 check(Air75V3LightingController.escapeSignalLightIndex == 0,
       "legacy task color can be explicitly cleared from Esc")
+
+let sidebarMetadata = """
+{
+  "electron-persisted-atom-state": {
+    "thread-descriptions-v1": {
+      "thread-1": "Codex 左侧栏任务名",
+      "thread-2": "  ",
+      "thread-3": "Renamed task"
+    }
+  }
+}
+""".data(using: .utf8)!
+let sidebarTitles = CodexSidebarTitleIndex.titles(in: sidebarMetadata)
+check(sidebarTitles == ["thread-1": "Codex 左侧栏任务名", "thread-3": "Renamed task"],
+      "Codex sidebar title metadata parses exact visible names")
+check(CodexSidebarTitleIndex.preferredTitle(
+    for: "thread-1", indexedTitle: "旧数据库标题", sidebarTitles: sidebarTitles
+) == "Codex 左侧栏任务名", "Codex sidebar title overrides stale SQLite title")
+check(CodexSidebarTitleIndex.preferredTitle(
+    for: "thread-2", indexedTitle: "数据库兜底标题", sidebarTitles: sidebarTitles
+) == "数据库兜底标题", "Codex SQLite title remains fallback")
+let appServerThreadList = """
+{"id":2,"result":{"data":[
+  {"id":"thread-1","name":"构建 Air75 Agent Bridge macOS 应用","preview":"旧的首条输入"},
+  {"id":"thread-2","name":"  ","preview":"不可作为任务名"}
+]}}
+""".data(using: .utf8)!
+let appServerTitles = CodexThreadListTitleIndex.titles(in: appServerThreadList)
+check(appServerTitles == ["thread-1": "构建 Air75 Agent Bridge macOS 应用"],
+      "Codex app-server parses Thread.name without using preview")
+check(CodexSidebarTitleIndex.preferredTitle(
+    for: "thread-1", indexedTitle: "旧数据库标题",
+    sidebarTitles: sidebarTitles, appServerTitles: appServerTitles
+) == "构建 Air75 Agent Bridge macOS 应用",
+      "Codex app-server Thread.name overrides all stale title fallbacks")
 
 do {
     let current = try KeyboardSleepConfiguration(raw: [0x01, 0x06, 0x18])
@@ -239,14 +287,42 @@ let runningRollout = """
 let runningSnapshot = CodexRolloutStatusParser.parse(data: runningRollout, now: rolloutNow)
 check(runningSnapshot.threadID == "thread-1" && runningSnapshot.state == .reasoning,
       "Codex rollout running state")
+let tailWithoutStart = """
+{"timestamp":"2026-07-19T05:00:06.000Z","type":"event_msg","payload":{"type":"agent_reasoning"}}
+{"timestamp":"2026-07-19T05:00:07.000Z","type":"response_item","payload":{"type":"custom_tool_call","status":"completed","name":"exec"}}
+{"timestamp":"2026-07-19T05:00:08.000Z","type":"response_item","payload":{"type":"custom_tool_call_output"}}
+""".data(using: .utf8)!
+check(CodexRolloutStatusParser.parse(data: tailWithoutStart, now: rolloutNow).state == .reasoning,
+      "Codex long-task tail stays running after turn_started leaves read window")
 let completeRollout = runningRollout + Data("\n{\"timestamp\":\"2026-07-19T05:00:04.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}".utf8)
 check(CodexRolloutStatusParser.parse(data: completeRollout, now: rolloutNow).state == .complete,
       "Codex rollout completed state")
+let completedAfterActivity = tailWithoutStart + Data("\n{\"timestamp\":\"2026-07-19T05:00:09.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_complete\"}}".utf8)
+check(CodexRolloutStatusParser.parse(data: completedAfterActivity, now: rolloutNow).state == .complete,
+      "Codex terminal event overrides ongoing activity")
 
 // 用户主动停止不是故障：turn_aborted 应回到空闲而不是红灯。
 let abortedRollout = runningRollout + Data("\n{\"timestamp\":\"2026-07-19T05:00:05.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_aborted\"}}".utf8)
 check(CodexRolloutStatusParser.parse(data: abortedRollout, now: rolloutNow).state == .idle,
       "Codex rollout aborted maps to idle")
+
+let activityLog = """
+2026-07-20T16:01:22Z info thread_stream_view_activity_changed active=true conversationId=thread-a rendererWindowId=1
+2026-07-20T16:01:23Z info thread_stream_view_activity_changed active=false conversationId=thread-a rendererWindowId=1
+2026-07-20T16:01:24Z info thread_stream_view_activity_changed active=true conversationId=thread-b rendererWindowId=1
+"""
+check(CodexDesktopConfirmationState.activeThreadID(in: activityLog) == "thread-b",
+      "Codex Desktop activity log resolves exact visible thread")
+check(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(["暂不 Esc", "安装 ↵"]),
+      "Codex MCP installation card requires confirmation")
+check(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(["拒绝", "批准一次", "总是允许"]),
+      "Codex permission card requires confirmation")
+check(CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation(["安装 ↵"]),
+      "focused Codex installation action is a fast confirmation signal")
+check(!CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation(["继续", "新建任务"]),
+      "generic focused actions do not trigger confirmation")
+check(!CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(["新建任务", "插件", "搜索"]),
+      "normal Codex navigation is not a confirmation")
 
 // 缓存的原始解析结果在每次轮询时重新计算衰减。
 let staleComplete = CodexTaskLightSnapshot(threadID: "t", state: .complete, eventDate: rolloutNow.addingTimeInterval(-61))
@@ -267,6 +343,38 @@ check(CodexTaskLightAggregator.aggregate([.reasoning, .waitingForConfirmation]) 
       "aggregate prefers confirmation over reasoning")
 check(CodexTaskLightAggregator.aggregate([.waitingForConfirmation, .error, .reasoning]) == .error,
       "aggregate prefers error above all")
+
+let candidateSnapshots = [
+    CodexTaskLightSnapshot(threadID: "recent", state: .idle, eventDate: nil, recencyAtMS: 300, pinnedOrder: 1),
+    CodexTaskLightSnapshot(threadID: "running", state: .reasoning, eventDate: nil, recencyAtMS: 100),
+    CodexTaskLightSnapshot(threadID: "unread", state: .complete, eventDate: nil, recencyAtMS: 200, isUnread: true, pinnedOrder: 0),
+    CodexTaskLightSnapshot(threadID: "waiting", state: .waitingForConfirmation, eventDate: nil, recencyAtMS: 50)
+]
+let recentSlots = CodexAgentSlotResolver.resolve(
+    candidates: candidateSnapshots, mode: .recent,
+    pinnedThreadIDs: [], customThreadIDs: []
+)
+check(recentSlots.prefix(4).compactMap(\.threadID) == ["recent", "unread", "running", "waiting"],
+      "recent Agent mode follows recency while preserving exact IDs")
+let prioritySlots = CodexAgentSlotResolver.resolve(
+    candidates: candidateSnapshots, mode: .priority,
+    pinnedThreadIDs: [], customThreadIDs: []
+)
+check(prioritySlots.prefix(4).compactMap(\.threadID) == ["waiting", "unread", "running", "recent"],
+      "priority Agent mode orders attention unread active then recent")
+let pinnedSlots = CodexAgentSlotResolver.resolve(
+    candidates: candidateSnapshots, mode: .pinned,
+    pinnedThreadIDs: ["running"], customThreadIDs: []
+)
+check(pinnedSlots.prefix(2).compactMap(\.threadID) == ["unread", "recent"],
+      "pinned Agent mode follows Codex pinned-thread order")
+let customSlots = CodexAgentSlotResolver.resolve(
+    candidates: candidateSnapshots, mode: .custom,
+    pinnedThreadIDs: [], customThreadIDs: ["running", nil, "recent"]
+)
+check(customSlots[0].threadID == "running" && customSlots[1].threadID == nil
+        && customSlots[2].threadID == "recent" && customSlots.count == 6,
+      "custom Agent mode keeps exact slot identity and empty keys")
 
 // Codex 线程索引：只取未归档用户线程、按 recency 降序、限六条。
 let indexDirectory = FileManager.default.temporaryDirectory
@@ -302,6 +410,8 @@ if sqlite3_open(indexDatabase.path, &testDB) == SQLITE_OK, let testDB {
           "thread index filters and orders user threads")
     check(!top.contains(where: { $0.threadID == "sub1" || $0.threadID == "arch1" || $0.threadID == "nopath" }),
           "thread index excludes subagent, archived and pathless rows")
+    check(reader.userThreads(withIDs: ["u7"]).map(\.threadID) == ["u7"],
+          "thread index keeps old custom assignment outside recent window")
     if let first = top.first, let absolute = top.first(where: { $0.threadID == "u3" }) {
         check(reader.rolloutURL(for: first).path == indexDirectory.appendingPathComponent("sessions/u1.jsonl").path,
               "thread index resolves relative rollout path")
@@ -336,8 +446,9 @@ do {
     }
     try store.save(legacy)
     let migrated = store.load()
-    check(migrated.schemaVersion == 8
+    check(migrated.schemaVersion == 9
             && migrated.sidelightRestoredAfterSignalLights == false
+            && migrated.resolvedAgentSourceMode == .recent
             && migrated.keyBindings.map(\.usage) == Array(0x3A...0x45),
           "migrates v1 F13-F24 configuration")
     var corrupted = BridgeConfiguration()
@@ -347,13 +458,17 @@ do {
     corrupted.keyBindings[0].usage = KeyBinding.hidArrayUsageSentinel
     try store.save(corrupted)
     let repaired = store.load()
-    check(repaired.schemaVersion == 8
+    check(repaired.schemaVersion == 9
             && repaired.sidelightRestoredAfterSignalLights == false
             && repaired.keyBindings[0].usage == 0x68
             && repaired.keyBindings.dropFirst().map(\.usage) == Array(0x69...0x73),
           "repairs persisted HID array sentinel without changing other bindings")
     check(DeviceProfileRegistry.loadBundled().profile(id: "nuphy.air75-v3") != nil,
           "loads bundled model profile registry")
+    let bundledProfiles = DeviceProfileRegistry.loadBundled()
+    check(["nuphy.air65-v3", "nuphy.air100-v3", "nuphy.kick75", "nuphy.node75", "nuphy.node100"]
+        .allSatisfy { bundledProfiles.profile(id: $0) != nil },
+          "loads all requested NuPhy software-mode profiles")
     check(KeyboardDriverRegistry.keymapDriver(for: .air75V3Fallback) != nil,
           "registers verified Air75 V3 keymap driver")
     check(KeyboardDriverRegistry.sleepDriver(for: .air75V3Fallback) != nil,

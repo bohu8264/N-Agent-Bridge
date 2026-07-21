@@ -1,6 +1,6 @@
 import Foundation
 
-/// The five user-facing states supported by the Air75 V3 sidelight.
+/// The five user-facing states shown on the six Agent indicator keys.
 public enum CodexTaskLightState: String, Codable, CaseIterable, Sendable {
     case idle
     case reasoning
@@ -29,7 +29,7 @@ public enum CodexTaskLightState: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// User-selectable colors for the single Codex status sidelight. Keeping the
+/// User-selectable colors for Codex Agent status indicators. Keeping the
 /// palette in the persisted configuration means changing a color never changes
 /// the task-state parser or the keyboard protocol bytes that are written.
 public struct CodexTaskLightPalette: Codable, Equatable, Sendable {
@@ -78,13 +78,105 @@ public struct CodexTaskLightPalette: Codable, Equatable, Sendable {
 
 public struct CodexTaskLightSnapshot: Equatable, Sendable {
     public var threadID: String?
+    public var title: String?
+    public var projectPath: String?
+    /// Stable Codex Desktop project identity from `thread-project-assignments`.
+    /// This lets the custom-assignment UI mirror the sidebar hierarchy instead
+    /// of guessing a project from a task's working directory.
+    public var projectID: String?
+    public var projectName: String?
+    public var projectOrder: Int?
     public var state: CodexTaskLightState
     public var eventDate: Date?
+    public var recencyAtMS: Int64
+    public var isUnread: Bool
+    /// Zero-based order from Codex Desktop's own `pinned-thread-ids` list.
+    /// `nil` means the thread is not pinned in Codex.
+    public var pinnedOrder: Int?
 
-    public init(threadID: String?, state: CodexTaskLightState, eventDate: Date?) {
+    public init(threadID: String?, title: String? = nil, projectPath: String? = nil,
+                projectID: String? = nil, projectName: String? = nil, projectOrder: Int? = nil,
+                state: CodexTaskLightState, eventDate: Date?, recencyAtMS: Int64 = 0,
+                isUnread: Bool = false, pinnedOrder: Int? = nil) {
         self.threadID = threadID
+        self.title = title
+        self.projectPath = projectPath
+        self.projectID = projectID
+        self.projectName = projectName
+        self.projectOrder = projectOrder
         self.state = state
         self.eventDate = eventDate
+        self.recencyAtMS = recencyAtMS
+        self.isUnread = isUnread
+        self.pinnedOrder = pinnedOrder
+    }
+
+    public static let unassigned = CodexTaskLightSnapshot(
+        threadID: nil, state: .idle, eventDate: nil
+    )
+}
+
+/// Pure slot selection shared by the app and software-only self tests. Every
+/// result contains exactly six entries so an empty custom key remains visibly
+/// unassigned and its firmware light can be switched off.
+public enum CodexAgentSlotResolver {
+    public static let slotCount = 6
+
+    public static func resolve(
+        candidates: [CodexTaskLightSnapshot],
+        mode: CodexAgentSourceMode,
+        pinnedThreadIDs: [String?],
+        customThreadIDs: [String?]
+    ) -> [CodexTaskLightSnapshot] {
+        let byID = Dictionary(uniqueKeysWithValues: candidates.compactMap { snapshot in
+            snapshot.threadID.map { ($0, snapshot) }
+        })
+        let selected: [CodexTaskLightSnapshot]
+        switch mode {
+        case .recent:
+            selected = Array(candidates.sorted(by: recencyOrder).prefix(slotCount))
+        case .pinned:
+            let officialPins = candidates
+                .filter { $0.pinnedOrder != nil }
+                .sorted { ($0.pinnedOrder ?? .max) < ($1.pinnedOrder ?? .max) }
+            if officialPins.isEmpty {
+                // Compatibility fallback for Codex builds that do not expose
+                // `pinned-thread-ids` in local state yet.
+                selected = pinnedThreadIDs.prefix(slotCount).map { id in
+                    guard let id else { return .unassigned }
+                    return byID[id] ?? CodexTaskLightSnapshot(threadID: id, state: .idle, eventDate: nil)
+                }
+            } else {
+                selected = Array(officialPins.prefix(slotCount))
+            }
+        case .priority:
+            selected = Array(candidates.sorted(by: priorityOrder).prefix(slotCount))
+        case .custom:
+            selected = Array(customThreadIDs.prefix(slotCount)).map { id in
+                guard let id else { return .unassigned }
+                return byID[id] ?? CodexTaskLightSnapshot(threadID: id, state: .idle, eventDate: nil)
+            }
+        }
+        return Array(selected.prefix(slotCount))
+            + Array(repeating: .unassigned, count: max(0, slotCount - selected.count))
+    }
+
+    private static func recencyOrder(_ lhs: CodexTaskLightSnapshot, _ rhs: CodexTaskLightSnapshot) -> Bool {
+        if lhs.recencyAtMS != rhs.recencyAtMS { return lhs.recencyAtMS > rhs.recencyAtMS }
+        return (lhs.threadID ?? "") < (rhs.threadID ?? "")
+    }
+
+    private static func priorityOrder(_ lhs: CodexTaskLightSnapshot, _ rhs: CodexTaskLightSnapshot) -> Bool {
+        let left = priorityRank(lhs)
+        let right = priorityRank(rhs)
+        return left == right ? recencyOrder(lhs, rhs) : left < right
+    }
+
+    private static func priorityRank(_ snapshot: CodexTaskLightSnapshot) -> Int {
+        if snapshot.state == .waitingForConfirmation || snapshot.state == .error { return 0 }
+        if snapshot.isUnread { return 1 }
+        if snapshot.state == .reasoning { return 2 }
+        return 3
     }
 }
 
@@ -118,6 +210,14 @@ public enum CodexRolloutStatusParser {
         var threadID: String?
         var state: CodexTaskLightState = .idle
         var eventDate: Date?
+        let activePayloadTypes: Set<String> = [
+            "agent_reasoning", "agent_message", "reasoning",
+            "custom_tool_call", "custom_tool_call_output",
+            "function_call", "function_call_output",
+            "mcp_tool_call", "mcp_tool_call_output",
+            "web_search_call", "computer_tool_call",
+            "patch_apply_begin", "patch_apply_end"
+        ]
 
         for rawLine in data.split(separator: 0x0A) {
             guard let object = try? JSONSerialization.jsonObject(with: Data(rawLine)) as? [String: Any] else {
@@ -176,15 +276,11 @@ public enum CodexRolloutStatusParser {
                 continue
             }
 
-            // Once confirmation has been supplied, any resumed reasoning or
-            // tool output means the task is actively running again.
-            if state == .waitingForConfirmation && (
-                payloadType == "agent_reasoning"
-                    || payloadType == "agent_message"
-                    || payloadType == "custom_tool_call_output"
-                    || payloadType == "function_call_output"
-                    || payloadType == "reasoning"
-            ) {
+            // Long-running rollouts can grow beyond the observer's bounded
+            // tail window, which means the original turn_started event is no
+            // longer present. Ongoing reasoning/tool activity is therefore a
+            // positive running signal on its own, not only after approval.
+            if activePayloadTypes.contains(payloadType) {
                 state = .reasoning
                 eventDate = parseDate(timestampValue)
             }
