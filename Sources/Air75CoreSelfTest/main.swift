@@ -321,6 +321,12 @@ check(CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation(["�
       "focused Codex installation action is a fast confirmation signal")
 check(!CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation(["继续", "新建任务"]),
       "generic focused actions do not trigger confirmation")
+check(!CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation(["请求批准"]),
+      "composer request-approval entrypoint is not a pending approval")
+check(!CodexDesktopConfirmationState.buttonLabelsContainConfirmationAction(["Request approval"]),
+      "English request-approval entrypoint is not a confirmation action")
+check(!CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(["请求批准", "取消"]),
+      "request-approval entrypoint cannot pair with unrelated cancel")
 check(!CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(["新建任务", "插件", "搜索"]),
       "normal Codex navigation is not a confirmation")
 

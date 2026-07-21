@@ -26,10 +26,11 @@ public enum CodexDesktopConfirmationState {
     /// and one way to decline/cancel. Requiring both groups prevents normal
     /// Codex navigation buttons from turning an Agent key orange.
     public static func buttonLabelsRequireConfirmation(_ labels: [String]) -> Bool {
-        let normalized = labels.map(normalize)
+        let normalized = confirmationActionLabels(labels)
+        guard !normalized.isEmpty else { return false }
         let affirmativeMarkers = [
-            "安装", "允许", "批准", "确认", "继续", "同意", "授权",
-            "install", "allow", "approve", "confirm", "continue", "accept"
+            "安装", "允许", "批准", "确认", "同意", "授权",
+            "install", "allow", "approve", "confirm", "accept"
         ]
         let negativeMarkers = [
             "暂不", "拒绝", "取消", "不允许", "稍后",
@@ -44,11 +45,28 @@ public enum CodexDesktopConfirmationState {
         return hasAffirmative && hasNegative
     }
 
+    /// Returns whether one button exposes an actual confirmation action. The
+    /// composer permanently shows a "请求批准 / Request approval" mode button;
+    /// that button asks Codex to request approval later and is not itself a
+    /// pending approval surface.
+    public static func buttonLabelsContainConfirmationAction(_ labels: [String]) -> Bool {
+        let normalized = confirmationActionLabels(labels)
+        let markers = [
+            "安装", "允许", "批准", "确认", "同意", "授权",
+            "暂不", "拒绝", "取消", "不允许", "稍后",
+            "install", "allow", "approve", "confirm", "accept",
+            "notnow", "deny", "decline", "reject", "cancel", "later"
+        ]
+        return normalized.contains { label in
+            markers.contains { label.contains($0) }
+        }
+    }
+
     /// A focused primary approval button is a sufficient fast-path signal.
     /// Deliberately excludes generic actions such as "继续" so normal Codex
     /// navigation and onboarding cannot be mistaken for a pending approval.
     public static func focusedButtonLabelsIndicateConfirmation(_ labels: [String]) -> Bool {
-        let normalized = labels.map(normalize)
+        let normalized = confirmationActionLabels(labels)
         let strongMarkers = [
             "安装", "允许", "批准", "拒绝", "暂不", "不允许", "授权",
             "install", "allow", "approve", "deny", "decline", "reject", "notnow"
@@ -56,6 +74,17 @@ public enum CodexDesktopConfirmationState {
         return normalized.contains { label in
             strongMarkers.contains { label.contains($0) }
         }
+    }
+
+    private static func confirmationActionLabels(_ labels: [String]) -> [String] {
+        let normalized = labels.map(normalize)
+        let passiveApprovalEntrypoints = [
+            "请求批准", "请求审批", "requestapproval", "askforapproval"
+        ]
+        guard !normalized.contains(where: { label in
+            passiveApprovalEntrypoints.contains { label.contains($0) }
+        }) else { return [] }
+        return normalized
     }
 
     private static func field(named name: String, in line: Substring) -> String? {

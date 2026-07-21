@@ -2,6 +2,15 @@
 
 更新时间：2026-07-21 CST
 
+## 0.11.6 已完成（修复非确认界面误亮橙灯）
+
+- 用户实机发现普通任务运行时，即使没有可处理的批准卡，Agent 键仍可能变橙。根因是 Codex 输入框常驻“请求批准 / Request approval”模式入口；旧辅助功能扫描把全窗口按钮标签混在一起，可能把这个入口与页面其他取消类按钮错误组合成确认卡。
+- “请求批准 / Request approval”现在明确作为模式入口排除；确认卡完整扫描改为只在同一个局部辅助功能子树内要求真正的肯定操作与否定操作同时存在，不再跨页面拼接按钮。
+- 保留真实“暂不 + 安装”“拒绝 + 批准/允许”组合和聚焦确认按钮快路径；新增中英文常驻入口及其与无关 Cancel/取消组合的回归测试。
+- Debug App 编译及 software-only SelfTest 通过；真实确认组合与四项中英文常驻入口误判回归全部通过。
+- Universal（arm64 + x86_64）Release、固定签名、DMG CRC/结构验证及 0.11.6 (33) 原位安装通过。升级后输入监控、辅助功能、HID 与灯光通道均正常，新旧版本 Designated Requirement 完全一致。
+- Development DMG：`dist/NAgentBridge-0.11.6-Development.dmg`；SHA-256：`f2d392b589d798f51591d58de62166a14307f7e1d4f162b0f6bcf86ef055bee7`。
+
 ## 0.11.5 已完成（使用 Codex 正式 Thread.name）
 
 - 用户截图复核证明 0.11.4 仍把主任务显示成最初长输入；原因是 `thread-descriptions-v1` 只覆盖部分短描述，并不是所有 Codex 左侧任务名的最终来源。

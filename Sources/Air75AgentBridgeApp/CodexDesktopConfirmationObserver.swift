@@ -91,7 +91,6 @@ final class CodexDesktopConfirmationObserver: @unchecked Sendable {
             return false
         }
         var seen = Set<CFHashCode>()
-        var labels: [String] = []
         var remaining = fullScan ? 8_000 : 120
 
         // A LIFO traversal visits the newest/bottom-most conversation controls
@@ -103,18 +102,63 @@ final class CodexDesktopConfirmationObserver: @unchecked Sendable {
             let role = node.role
             if role == (kAXButtonRole as String) {
                 let currentLabels = buttonLabels(of: element)
-                labels.append(contentsOf: currentLabels)
                 if !fullScan,
                    CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation(currentLabels) {
                     return true
                 }
-                if CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(labels) {
+                if CodexDesktopConfirmationState.buttonLabelsContainConfirmationAction(currentLabels),
+                   localButtonGroupRequiresConfirmation(around: element) {
                     return true
                 }
             }
             stack.append(contentsOf: node.children)
         }
         return false
+    }
+
+    /// Confirmation actions must belong to the same small Accessibility
+    /// subtree. Never combine the composer's permanent "请求批准" button with
+    /// an unrelated Cancel/Later button elsewhere in the Codex window.
+    private static func localButtonGroupRequiresConfirmation(around button: AXUIElement) -> Bool {
+        var element = button
+        for _ in 0..<7 {
+            guard let parent = parentElement(of: element) else { return false }
+            let result = buttonLabels(in: parent, nodeLimit: 160)
+            if CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(result.labels) {
+                return true
+            }
+            // Every higher ancestor contains at least this subtree. Once the
+            // candidate is this large it is a page/window, not one card.
+            if result.overflow { return false }
+            element = parent
+        }
+        return false
+    }
+
+    private static func buttonLabels(
+        in root: AXUIElement,
+        nodeLimit: Int
+    ) -> (labels: [String], overflow: Bool) {
+        var stack = [root]
+        var seen = Set<CFHashCode>()
+        var labels: [String] = []
+        var remaining = nodeLimit
+        while let element = stack.popLast(), remaining > 0 {
+            remaining -= 1
+            guard seen.insert(CFHash(element)).inserted else { continue }
+            let node = nodeAttributes(of: element)
+            if node.role == (kAXButtonRole as String) {
+                labels.append(contentsOf: buttonLabels(of: element))
+            }
+            stack.append(contentsOf: node.children)
+        }
+        return (labels, remaining == 0 && !stack.isEmpty)
+    }
+
+    private static func parentElement(of element: AXUIElement) -> AXUIElement? {
+        guard let raw = attribute(kAXParentAttribute, of: element),
+              CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
+        return unsafeBitCast(raw, to: AXUIElement.self)
     }
 
     private static func focusedElement(of root: AXUIElement) -> AXUIElement? {

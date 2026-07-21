@@ -10,10 +10,10 @@ N Agent Bridge 是一个原生 macOS 工具，把受支持的 NuPhy 键盘变成
 
 ## 下载与安装
 
-当前可下载版本为 **0.11.5 Development**：
+当前可下载版本为 **0.11.6 Development**：
 
-- [下载 0.11.5 测试版 DMG](https://github.com/bohu8264/N-Agent-Bridge/releases/download/v0.11.5-development/NAgentBridge-0.11.5-Development.dmg)
-- [查看 0.11.5 发布说明与源码包](https://github.com/bohu8264/N-Agent-Bridge/releases/tag/v0.11.5-development)
+- [下载 0.11.6 测试版 DMG](https://github.com/bohu8264/N-Agent-Bridge/releases/download/v0.11.6-development/NAgentBridge-0.11.6-Development.dmg)
+- [查看 0.11.6 发布说明与源码包](https://github.com/bohu8264/N-Agent-Bridge/releases/tag/v0.11.6-development)
 - SHA-256：`ed5405920788f1883d85387eabbaee1312debe7788cf1f4feed4db14c9a944b7`
 
 安装步骤：
