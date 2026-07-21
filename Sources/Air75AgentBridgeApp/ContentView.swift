@@ -1457,7 +1457,7 @@ private let backlightColors: [(hex: String, name: String)] = [
 ]
 
 private var appVersion: String {
-    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.5"
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.6"
 }
 
 private func deviceConnectionText(_ device: DeviceSnapshot?) -> String {

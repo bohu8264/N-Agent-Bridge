@@ -1,5 +1,13 @@
 # Release
 
+## 0.11.6 Development Build
+
+- 版本：`0.11.6 (33)`。
+- 修复普通任务没有批准卡时偶发误亮橙灯：输入框常驻“请求批准 / Request approval”只表示发送模式，不再当作正在等待批准。
+- 可见确认卡改为在同一局部辅助功能子树中匹配真正的肯定与否定操作，防止跨页面把无关按钮拼成确认状态；真实安装/批准卡仍保持橙灯。
+- Debug App、software-only SelfTest、Universal（arm64 + x86_64）App、固定签名、DMG CRC/结构验证和 0.11.6 (33) 原位安装：通过。
+- Development DMG SHA-256：`f2d392b589d798f51591d58de62166a14307f7e1d4f162b0f6bcf86ef055bee7`。
+
 ## 0.11.5 Development Build
 
 - 版本：`0.11.5 (32)`。

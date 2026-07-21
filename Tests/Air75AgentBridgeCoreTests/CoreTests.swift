@@ -277,6 +277,18 @@ final class CoreTests: XCTestCase {
         XCTAssertFalse(CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation([
             "继续", "新建任务"
         ]))
+        XCTAssertFalse(CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation([
+            "请求批准"
+        ]))
+        XCTAssertFalse(CodexDesktopConfirmationState.buttonLabelsContainConfirmationAction([
+            "Request approval"
+        ]))
+        XCTAssertFalse(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation([
+            "请求批准", "取消"
+        ]))
+        XCTAssertFalse(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation([
+            "Request approval", "Cancel"
+        ]))
         XCTAssertFalse(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation([
             "搜索", "新建任务", "插件"
         ]))
