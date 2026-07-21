@@ -65,7 +65,7 @@ public final class CodexAppServerBackend: AgentBackend, @unchecked Sendable {
                 self.process = process
                 self.input = stdin.fileHandleForWriting
                 let id = self.sendRequest(method: "initialize", params: [
-                    "clientInfo": ["name": "n-agent-bridge", "title": "N Agent Bridge", "version": "0.9.0"],
+                    "clientInfo": ["name": "n-agent-bridge", "title": "N Agent Bridge", "version": "0.13.5"],
                     "capabilities": ["experimentalApi": true]
                 ])
                 self.pendingMethods[id] = "initialize"

@@ -48,6 +48,9 @@ cleanup() { /bin/rm -rf "$staging_dir"; }
 trap cleanup EXIT
 cp -R "$app_dir" "$staging_dir/"
 ln -s /Applications "$staging_dir/Applications"
+if [[ -f "$project_dir/Distribution/安装说明.txt" ]]; then
+  cp "$project_dir/Distribution/安装说明.txt" "$staging_dir/安装说明.txt"
+fi
 
 if [[ "$dmg_path" != "$project_dir/dist/NAgentBridge.dmg" \
    && "$dmg_path" != "$project_dir/dist/NAgentBridge-$version_value-Development.dmg" ]]; then
@@ -60,5 +63,5 @@ if [[ "$release_kind" == "distribution" ]]; then
   codesign --force --timestamp --sign "$identity_value" "$dmg_path"
   codesign --verify --verbose=2 "$dmg_path"
 fi
-shasum -a 256 "$dmg_path" > "$dmg_path.sha256"
+(cd "$output_dir" && shasum -a 256 "${dmg_path:t}") > "$dmg_path.sha256"
 echo "Created: $dmg_path"

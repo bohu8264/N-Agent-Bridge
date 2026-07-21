@@ -173,6 +173,37 @@ public final class ConfigurationStore: @unchecked Sendable {
             value.schemaVersion = 13
             requiresSchemaSave = true
         }
+        if value.schemaVersion < 14 {
+            // Schema 13 repaired the known mixed F13/F15/Tab sequence only
+            // while upgrading from an older schema. A configuration first
+            // written by that short-lived build could already claim schema 13
+            // and therefore bypass the repair forever. Schema 14 applies the
+            // same full-signature repair to every model copy. The strict
+            // signature deliberately preserves genuine custom bindings.
+            value.schemaVersion = 14
+            requiresSchemaSave = true
+        }
+        let repairedLegacy = BridgeConfiguration.repairingKnownCorruptedDefaultLayout(
+            value.keyBindings,
+            hardwareProfileInstalled: value.hardwareProfileInstalled == true
+        )
+        if repairedLegacy != value.keyBindings {
+            value.keyBindings = repairedLegacy
+            requiresSchemaSave = true
+        }
+        if var modelBindings = value.modelKeyBindings {
+            for (profileID, bindings) in modelBindings {
+                let repaired = BridgeConfiguration.repairingKnownCorruptedDefaultLayout(
+                    bindings,
+                    hardwareProfileInstalled: value.hasInstalledHardwareProfile(for: profileID)
+                )
+                if repaired != bindings {
+                    modelBindings[profileID] = repaired
+                    requiresSchemaSave = true
+                }
+            }
+            value.modelKeyBindings = modelBindings
+        }
         // A short-lived multi-model build derived Kick75 from the installed
         // Air profile and persisted only Agent 1 as F14 while the remaining
         // actions stayed F2-F12. That mixed sequence can never represent the

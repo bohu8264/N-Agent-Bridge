@@ -558,7 +558,7 @@ do {
     }
     try store.save(legacy)
     let migrated = store.load()
-    check(migrated.schemaVersion == 13
+    check(migrated.schemaVersion == 14
             && migrated.sidelightRestoredAfterSignalLights == false
             && migrated.resolvedAgentSourceMode == .recent
             && migrated.keyBindings.map(\.usage) == Array(0x3A...0x45),
@@ -570,7 +570,7 @@ do {
     corrupted.keyBindings[0].usage = KeyBinding.hidArrayUsageSentinel
     try store.save(corrupted)
     let repaired = store.load()
-    check(repaired.schemaVersion == 13
+    check(repaired.schemaVersion == 14
             && repaired.sidelightRestoredAfterSignalLights == false
             && repaired.keyBindings[0].usage == 0x68
             && repaired.keyBindings.dropFirst().map(\.usage) == Array(0x69...0x73),
@@ -594,9 +594,33 @@ do {
     mixedAir.setBindings(mixedAirBindings, for: "nuphy.air75-v3")
     try store.save(mixedAir)
     let repairedAir = store.load()
-    check(repairedAir.schemaVersion == 13
+    check(repairedAir.schemaVersion == 14
             && repairedAir.bindings(for: "nuphy.air75-v3").map(\.usage) == Array(0x68...0x73),
           "repairs exact Air75 F13/F15/Tab/F16-F24 first-run corruption")
+    var schema13Mixed = BridgeConfiguration()
+    schema13Mixed.schemaVersion = 13
+    var schema13MixedBindings = BridgeConfiguration.hardwareProfileBindings
+    schema13MixedBindings[1].usage = 0x6A
+    schema13MixedBindings[2].usage = 0x2B
+    let verifiedProfileIDs = ["nuphy.air75-v3", "nuphy.kick75", "nuphy.node100-lp-ansi"]
+    for profileID in verifiedProfileIDs {
+        schema13Mixed.setHardwareProfileState(
+            InstalledHardwareProfileState(installed: true),
+            for: profileID
+        )
+        schema13Mixed.setBindings(schema13MixedBindings, for: profileID)
+    }
+    try store.save(schema13Mixed)
+    let schema14Repaired = store.load()
+    check(schema14Repaired.schemaVersion == 14
+            && verifiedProfileIDs.allSatisfy {
+                schema14Repaired.bindings(for: $0).map(\.usage) == Array(0x68...0x73)
+            },
+          "schema 14 repairs saved mixed defaults for Air75, Kick75 and Node100")
+    let freshConfiguration = BridgeConfiguration()
+    check(verifiedProfileIDs.allSatisfy {
+        freshConfiguration.bindings(for: $0).map(\.usage) == Array(0x3A...0x45)
+    }, "fresh configuration starts all verified models on physical F1-F12 before setup")
     var genuineCustomAir = BridgeConfiguration.hardwareProfileBindings
     genuineCustomAir[2].usage = 0x14
     check(BridgeConfiguration.repairingKnownCorruptedDefaultLayout(

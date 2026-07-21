@@ -737,6 +737,14 @@ private final class KeymapProtocolSession {
 
     func transact(command: UInt8, length: UInt8, address: UInt16, handle: UInt8,
                   payload: [UInt8]) throws -> [UInt8] {
+        try NuPhyHIDOperationCoordinator.withExclusiveAccess {
+            try transactLocked(command: command, length: length, address: address,
+                               handle: handle, payload: payload)
+        }
+    }
+
+    private func transactLocked(command: UInt8, length: UInt8, address: UInt16,
+                                handle: UInt8, payload: [UInt8]) throws -> [UInt8] {
         let matches = productIDs.map { productID in
             [
                 kIOHIDVendorIDKey: Air75V3KeymapController.vendorID,

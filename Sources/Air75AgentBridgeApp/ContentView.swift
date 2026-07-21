@@ -271,6 +271,7 @@ struct OverviewView: View {
         !store.currentHardwareProfileNeedsInstallation
             && store.configuration.mappingMode != .unavailable
             && store.codexDesktopKeybindingsInstalled
+            && store.dedicatedEventSuppressionActive
     }
 
     private var permissionsReady: Bool {
@@ -1442,7 +1443,7 @@ private let backlightColors: [(hex: String, name: String)] = [
 ]
 
 private var appVersion: String {
-    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.7"
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.13.5"
 }
 
 private func deviceConnectionText(_ device: DeviceSnapshot?) -> String {

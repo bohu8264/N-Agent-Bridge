@@ -157,7 +157,7 @@ final class CoreTests: XCTestCase {
         }
         try store.save(legacy)
         let migrated = store.load()
-        XCTAssertEqual(migrated.schemaVersion, 13)
+        XCTAssertEqual(migrated.schemaVersion, 14)
         XCTAssertEqual(migrated.keyBindings.map(\.usage), Array(0x3A...0x45))
         XCTAssertEqual(migrated.agentLightingEnabled, true)
         XCTAssertFalse(migrated.overlayEnabled)
@@ -183,7 +183,7 @@ final class CoreTests: XCTestCase {
         try store.save(corrupted)
 
         let repaired = store.load()
-        XCTAssertEqual(repaired.schemaVersion, 13)
+        XCTAssertEqual(repaired.schemaVersion, 14)
         XCTAssertEqual(repaired.bindings(for: "nuphy.air75-v3").map(\.usage), Array(0x68...0x73))
 
         var custom = BridgeConfiguration.hardwareProfileBindings
@@ -195,6 +195,35 @@ final class CoreTests: XCTestCase {
             ),
             custom
         )
+    }
+
+    func testSchema14AlsoRepairsCorruptionAlreadySavedAsSchema13() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ConfigurationStore(baseURL: root)
+        let profileIDs = ["nuphy.air75-v3", "nuphy.kick75", "nuphy.node100-lp-ansi"]
+        var corrupted = BridgeConfiguration()
+        corrupted.schemaVersion = 13
+        var mixed = BridgeConfiguration.hardwareProfileBindings
+        mixed[1].usage = 0x6A
+        mixed[2].usage = 0x2B
+        for profileID in profileIDs {
+            corrupted.setHardwareProfileState(
+                InstalledHardwareProfileState(installed: true),
+                for: profileID
+            )
+            corrupted.setBindings(mixed, for: profileID)
+        }
+        try store.save(corrupted)
+
+        let repaired = store.load()
+        XCTAssertEqual(repaired.schemaVersion, 14)
+        for profileID in profileIDs {
+            XCTAssertEqual(
+                repaired.bindings(for: profileID).map(\.usage),
+                Array(0x68...0x73)
+            )
+        }
     }
 
     func testProfileRegistrySelectsExactModelAndGatesHardwareDrivers() {

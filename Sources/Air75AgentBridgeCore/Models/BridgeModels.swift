@@ -384,7 +384,7 @@ public struct InstalledHardwareProfileState: Codable, Equatable, Sendable {
 }
 
 public struct BridgeConfiguration: Codable, Sendable {
-    public var schemaVersion = 13
+    public var schemaVersion = 14
     public var hasCompletedOnboarding = false
     public var enabled = false
     public var codexModeEnabled = false
@@ -591,8 +591,12 @@ public struct BridgeConfiguration: Codable, Sendable {
     public func bindings(for profileID: String?) -> [KeyBinding] {
         let profileInstalled = hasInstalledHardwareProfile(for: profileID)
         if let profileID, let stored = modelKeyBindings?[profileID], !stored.isEmpty {
-            return Self.repairingUnsupportedBindings(
+            let repaired = Self.repairingKnownCorruptedDefaultLayout(
                 stored,
+                hardwareProfileInstalled: profileInstalled
+            )
+            return Self.repairingUnsupportedBindings(
+                repaired,
                 hardwareProfileInstalled: profileInstalled
             )
         }

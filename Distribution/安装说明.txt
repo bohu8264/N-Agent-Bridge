@@ -1,0 +1,15 @@
+N Agent Bridge 安装说明
+
+1. 把“N Agent Bridge.app”拖到旁边的“Applications（应用程序）”。
+2. 当前免费测试包没有 Apple 公证。若第一次打开被拦截，请到：
+   系统设置 → 隐私与安全性 → 仍要打开。
+   不要运行“spctl --master-disable”，也不要关闭整个 Gatekeeper。
+3. 在系统设置中允许 N Agent Bridge 的“输入监控”和“辅助功能”，然后完整退出并重新打开应用。
+4. 第一次配置必须使用可传输数据的 USB-C 线，把 NuPhy 键盘切到有线模式，并完全退出 NuPhyIO。
+5. 在 N Agent Bridge 点“连接并启用/配置”。等待应用确认键位已经回读；不要在处理中重复点击或拔线。
+6. 配置完成后断开并重新连接键盘，再用 Command-Q 完整退出 Codex Desktop 并重新打开一次。
+
+已完成 USB-C 验证的型号：Air75 V3 ANSI、Kick75 IO、Node100 LP ANSI（矮轴）。
+其他布局或型号只会安全识别，不会盲目写入未知固件。
+
+项目主页：https://github.com/bohu8264/N-Agent-Bridge

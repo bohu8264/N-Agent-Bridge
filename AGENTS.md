@@ -6,11 +6,11 @@
 
 这是一个面向 NuPhy 键盘的原生 macOS SwiftUI 菜单栏应用，把受支持型号的实体控制中继到当前 Codex Desktop。型号 Profile 与硬件写入 driver 分离；当前完整验证 Air75 V3、Kick75 IO 与 Node100 LP ANSI。未知型号默认只有安全识别能力，不记录普通文字输入，不冒充 OpenAI 官方硬件，也不猜测未知固件写入协议。
 
-当前已构建开发版：`0.13.4 (52)`（修复 Kick75 已被首页识别但灯光页因当前型号 Profile 未安装而跳过 D5 读取、长期显示“USB-C 待响应”的问题；概览就绪状态改为按当前型号判断）。
+当前已构建开发版：`0.13.5 (53)`（全新 Mac/跨机器一致性：实体配置只读验真、F13–F24 schema 14 持续修复、NuPhy S4 HID 串行事务和灯光有界重试）。
 
 - 源码根目录：本文件所在目录
 - 0.13.0 按 NuPhyIO 官方 Node100 LP ANSI 的 108 键顺序补齐 D8 布局；Q=44 已完成写入、D2 回读和原色恢复实测。
-- 当前安装位置仍可能是上一版；`dist/N Agent Bridge.app` 与 `dist/NAgentBridge-0.13.4-Development.dmg` 已构建校验。最终复核时没有 NuPhy 键盘在线，不能把本轮 Kick75 USB-C D5/D6 实写记为已验收；朋友安装新版后必须确认灯光页由“USB-C 待响应”进入可用状态，并复核背光、侧灯、状态灯与恢复。Air75 V3 仍需确认 Tab 熄灭、F1–F6 按任务状态显示。
+- 当前安装位置仍可能是上一版；`dist/N Agent Bridge.app` 与 `dist/NAgentBridge-0.13.5-Development.dmg` 已构建校验。最终复核时没有 NuPhy 键盘在线，不能把 0.13.5 的 USB-C 实写记为已验收；朋友安装后仍需对 Air75 V3、Kick75 IO、Node100 LP ANSI 分别复核 F13–F24、指示灯、六路状态灯和安全恢复。
 - 当前签名：固定本机身份 `N Agent Bridge Local Signing`，Bundle ID `com.nagentbridge.mac`；不是 Developer ID/Apple 公证的公开发行签名
 
 ## 2. 接手后先读
@@ -174,7 +174,7 @@ swift run --disable-sandbox --scratch-path /tmp/air75-agent-bridge-build Air75Co
 ./scripts/release-public.sh
 ```
 
-只有该脚本完整成功后才会产生可外发的 `dist/NAgentBridge.dmg`；不得把带 `Development` 的文件发给其他 Mac。
+只有该脚本完整成功后才会产生 Apple 认可的 `dist/NAgentBridge.dmg`。带 `Development` 的文件只能用于明确知情的朋友测试：首次需要用户在“隐私与安全性”中确认来源，不能描述成 Apple 公证正式发行版。
 
 发布脚本默认要求固定本机签名身份；缺失时先运行 `scripts/ensure-local-signing-identity.sh`，不要用 `-` 绕回 ad-hoc。不要为了“试一下”覆盖 `/Applications/N Agent Bridge.app`。
 

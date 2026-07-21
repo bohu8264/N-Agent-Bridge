@@ -1,5 +1,16 @@
 # Release
 
+## 0.13.5 Development Build
+
+- 版本：`0.13.5 (53)`。
+- 新增全局 NuPhy S4 HID 事务协调器：键位读写、D5/D6 灯光和 D8 状态灯不再并发争用没有 transaction ID 的同一回复，降低首次配置、唤醒和切换灯效时偶发待响应/延后生效。
+- 已保存的硬件 Profile 在直接 USB-C 重连后会从键盘逐字节只读验真；固件更新恢复成原生 F1–F12 时不再误报就绪，而是明确要求重新配置。U1 2.4G 接收器不会被误当作首次配置数据线。
+- schema 升级到 14；`F13 / F15 / Tab / F16…` 已知异常序列改为每次加载持续精确修复，不再只依赖一次 schema 迁移，Air75 V3、Kick75 IO 与 Node100 LP ANSI 都覆盖回归，真实自定义键保持不变。
+- Air75 V3、Kick75 IO、Node100 LP ANSI 首次配置统一默认“指示灯”背光。键位验真、灯光握手和 D8 同步在新枚举/唤醒失败后做最多三次有界重试；概览只有在 F13–F24、输入抑制、权限和灯光条件全部满足时才显示就绪。
+- DMG 新增中文安装说明；删除空 entitlements 文件、旧构建缓存/制品和已经从界面移除的亮度写入入口。
+- Debug App、software-only SelfTest、Universal（arm64 + x86_64）App、固定签名、Bundle 资源、DMG CRC/结构和只读挂载内容验证：通过。DMG 内含 App、Applications 链接与中文安装说明。当前没有 NuPhy 键盘在线，本版没有新增实体写入验收，不能替代三型号朋友机复核。
+- Development DMG SHA-256：`71d7a873187da979d4eec3e499581221e05d9a811294da9ab9a9acf0d121956e`。
+
 ## 0.13.4 Development Build
 
 - 版本：`0.13.4 (52)`。
