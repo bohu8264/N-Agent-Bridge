@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 2,
+  "id": "nuphy.kick75",
+  "model": "NuPhy Kick75",
+  "protocolFamily": "nuphyS4",
+  "capabilities": {
+    "hasKnob": true,
+    "hasSidelight": true,
+    "supportsWirelessConfiguration": false
+  },
+  "usbIdentities": [
+    { "vendorID": 6645, "productID": 4134 },
+    { "vendorID": 6645, "productID": 4135 },
+    { "vendorID": 6645, "productID": 9760 }
+  ],
+  "bluetoothVendorIDs": [2007, 6645],
+  "productAliases": ["Kick75", "Kick75 Low", "Kick75 High", "Kick75-1", "Kick75-2", "Kick75-3", "NuPhy Kick75 Dongle"],
+  "manufacturerAliases": ["NuPhy", "NuPhy Keyboard", "NuPhy Keybord"],
+  "allowedUsagePages": [1, 7, 12, 65280, 65376, 65535],
+  "specialUsages": [58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69]
+}

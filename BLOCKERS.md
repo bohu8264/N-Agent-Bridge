@@ -22,8 +22,12 @@
 
 中继与系统事件拦截必须获得输入监控和辅助功能权限。macOS 明确要求用户本人在系统设置中确认，应用和安装包不能静默授权。应用只匹配 Air75 V3 的专用 Usage，并只向当前 `com.openai.codex` 进程发送映射后的快捷键。
 
-0.8.0 沿用经 0.5.0 验证的 Codex Desktop 中继，写入当前支持的 `~/.codex/keybindings.json` 命令，不启动独立的 Codex app-server。F11 直接使用 Codex 原生 `Control-Shift-D`；Codex Desktop 更新后若调整其他内部命令名，需要重新校验命令表。应用保留用户原快捷键并为改写前文件创建备份。
+按键动作仍沿用经 0.5.0 验证的 Codex Desktop 中继，写入当前支持的 `~/.codex/keybindings.json` 命令。0.11.5 新增的独立 app-server 连接只调用只读 `thread/list` 获取 ID 与正式 `Thread.name`，不承接 Codex Desktop 的任务执行或批准。F11 直接使用 Codex 原生 `Control-Shift-D`；Codex Desktop 更新后若调整其他内部命令名，需要重新校验命令表。应用保留用户原快捷键并为改写前文件创建备份。
 
-## 6. 六任务侧栏顺序依赖 Codex 内部实现
+## 6. Codex 后台审批实时状态仍缺公开稳定通道
 
-六任务状态读取 `~/.codex/state_<N>.sqlite` threads 表（只读、只查结构列）。两个已知风险：该库 schema 无兼容承诺，Codex 升级可能改名/改列（应用已按最高版本号自动发现并保留目录扫描回退）；侧栏处于 `mode="project"` 分组模式时，Command+1..6 的可见顺序可能与纯 recency 排序错位，上线前需一次 UI 实测核对。另外 rollout 文件中没有任何审批类事件，"橙色待确认"当前无法从磁盘数据触发——真实审批信号只存在于 app-server RPC 通道，需后续接入。
+0.11.3 已用辅助功能按钮语义和 Desktop 活动 `conversationId` 补齐当前可见任务的安装、MCP 表单与普通审批橙灯，不读取聊天正文。剩余风险是：Codex Desktop 的 app-server 使用私有 stdio，另起进程无法读取其 `waitingOnApproval/waitingOnUserInput`；后台未渲染任务的 MCP 确认卡也不在辅助功能树中。因此“六个后台任务全部实时审批”仍需未来稳定、可共享的 app-server RPC 或官方事件接口。本地 `state_<N>.sqlite` 同样没有兼容承诺，升级改列时应用会自动回退目录扫描。
+
+## 7. 新增 NuPhy 型号的硬件写入等待实机
+
+Air65 V3、Air100 V3、Kick75、Node75、Node100 已能凭官方 PID/产品名进入安全软件按键模式。NuPhyIO 目录表明它们属于 S4 家族并有背光/侧灯，但这不能替代实机验证：键位表长度、矩阵地址、D8 固件、灯位 skip 规则和 U1 路由都可能不同。拿到每个型号后必须分别完成读取、备份、写入、ACK、完整回读和恢复，之后才能在 `KeyboardDriverRegistry` 注册 driver。当前禁止为了“看起来支持”而复用 Air75 V3 写入 driver。

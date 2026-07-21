@@ -1,5 +1,59 @@
 # Release
 
+## 0.11.5 Development Build
+
+- 版本：`0.11.5 (32)`。
+- 自定义分配与六个 Agent 槽位改用 Codex app-server `thread/list` 的正式 `Thread.name`；不再把 `preview`（首条输入）、陈旧 SQLite `title` 或不完整的 `thread-descriptions-v1` 当作最终任务名。
+- 只读标题观察器每两秒同步一次，主任务、历史任务及用户改名无需重启即可更新；只保留内存中的 thread ID/名称，不保存预览或正文。
+- Debug App、software-only SelfTest、真实 app-server 标题验证、Universal（arm64 + x86_64）App、固定签名、DMG CRC/结构验证和 0.11.5 (32) 原位安装：通过。
+- Development DMG SHA-256：`ed5405920788f1883d85387eabbaee1312debe7788cf1f4feed4db14c9a944b7`。
+
+## 0.11.4 Development Build
+
+- 版本：`0.11.4 (31)`。
+- 自定义分配的任务名改为 Codex 左侧栏使用的 `thread-descriptions-v1`，不再把 SQLite 中空白、陈旧或过长的 `threads.title` 当作最终名称。
+- Codex 更新任务名称后，项目菜单、当前选择与六个 Agent 槽位会在下一次状态轮询中同步；SQLite 标题仅作为兼容旧版本的兜底。
+- Debug build、新增标题同步测试、Universal（arm64 + x86_64）App、固定签名、DMG CRC/结构验证、六型号资源验证与 0.11.4 (31) 原位安装：通过。
+- Development DMG SHA-256：`ceefc1dcdebdbe5f02d4599829ff636b708ff83253b3073768793fe058e3f906`。
+- 已知限制：该版本把不完整的 `thread-descriptions-v1` 误认为最终标题来源；主任务可能继续显示旧首条输入，0.11.5 已修复。
+
+## 0.11.3 Development Build
+
+- 版本：`0.11.3 (30)`。
+- 修复 Codex 的应用/插件安装卡、MCP 审批卡没有触发橙色“需要确认”状态的问题。
+- 确认卡只读取按钮语义，并以 Codex Desktop 活动 `conversationId` 绑定精确任务；不读取或保存聊天正文，处理后自动恢复原任务状态。
+- 检测使用轻量焦点快路径和低频完整校验，普通“搜索、插件、新建任务”等按钮不会误触发。
+- Debug build、72 项 software-only SelfTest、Universal（arm64 + x86_64）App、固定签名、DMG CRC/结构验证与 0.11.3 (30) 原位安装：通过。
+- Development DMG SHA-256：`6970953549389ab1b5b7ca85e7aee5e7f9719aaf4c11788c7a38f96deb9c8402`。
+
+## 0.11.2 Development Build
+
+- 版本：`0.11.2 (29)`。
+- 四种 Agent 来源模式与 Codex Micro 官方定义保持一致。
+- 自定义分配改为读取 Codex 左侧栏的项目名称、顺序和对话归属，以“项目 → 对话”二级菜单选择稳定对话 ID；长文本不再铺满一个扁平菜单。
+- 状态解析继续限制在最近 50 个及精确置顶/自定义 ID，轻量选择目录支持最多 500 个未归档用户对话；历史已删除项目不再污染菜单，无法匹配当前项目的旧对话统一归入“其他对话”。
+- Debug build、66 项 software-only SelfTest、当前 Codex 项目菜单目视验收、Universal App、固定本机签名和 DMG 完整性验证：通过。
+- Development DMG SHA-256：`ec7fe6b360cf12474705643c8fe50f25fe48f53c112299c801a1bd47c03f35de`。
+
+## 0.11.1 Development Build
+
+- 版本：`0.11.1 (28)`。
+- 修复长任务文件增长后 `turn_started` 离开读取窗口，运行任务被误判为空闲白灯的问题。
+- 活跃状态加入 90 秒 D8 保活；Mac/键盘休眠唤醒后主动补发六灯状态。
+- Debug build、66 项 software-only SelfTest、真实 Codex 长任务状态演练、Universal App、固定本机签名和 DMG 完整性验证：通过。
+- Development DMG SHA-256：`78fcb58be4d231c68451e53dc20839894c14786ac5e3a00325bd53baa2964f4b`。
+
+## 0.11.0 Development Build
+
+- 版本：`0.11.0 (27)`。
+- Agent 1–6 改为稳定线程 ID，提供最近、Codex 置顶、优先和自定义四种来源模式；完成任务或侧栏重排不再改变自定义绑定的身份。
+- Air75 V3 的 Agent 动作可学习到其他受支持实体键，D8 状态灯会跟随绑定后的实际灯位；空槽熄灭，已分配空闲槽为白色。
+- 普通侧灯保留独立灯效、亮度与常亮颜色，不再承担 Codex 聚合状态。
+- 新增 Air65 V3、Air100 V3、Kick75、Node75、Node100 安全识别与软件按键模式；未完成各型号实机验证前，不开放其 Vendor HID 写入。
+- Universal `arm64 + x86_64`、64 项 software-only SelfTest、六型号 App Bundle Resource Test、固定本机签名和 DMG 完整性验证：通过。
+- Development DMG SHA-256：`e9d4cfc8bb68e922832331ad0e6933901c1bbf75d03d36fb769b6706e866ad22`。
+- 该 DMG 使用本地自签名证书，适合已知来源测试，不是 Apple 公证的正式发行包。
+
 ## 0.10.1 Development Build
 
 - 版本：`0.10.1 (26)`。

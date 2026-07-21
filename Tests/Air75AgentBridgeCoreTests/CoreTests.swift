@@ -2,6 +2,51 @@ import XCTest
 @testable import Air75AgentBridgeCore
 
 final class CoreTests: XCTestCase {
+    func testCodexThreadListNameIsAuthoritativeTitle() throws {
+        let data = """
+        {"id":2,"result":{"data":[
+          {"id":"thread-1","name":"构建 Air75 Agent Bridge macOS 应用","preview":"旧的首条输入"},
+          {"id":"thread-2","name":"  ","preview":"不要作为标题"},
+          {"id":"thread-3","name":null,"preview":"也不要作为标题"}
+        ]}}
+        """.data(using: .utf8)!
+        let appServerTitles = CodexThreadListTitleIndex.titles(in: data)
+        XCTAssertEqual(appServerTitles, ["thread-1": "构建 Air75 Agent Bridge macOS 应用"])
+        XCTAssertEqual(
+            CodexSidebarTitleIndex.preferredTitle(
+                for: "thread-1",
+                indexedTitle: "旧数据库标题",
+                sidebarTitles: ["thread-1": "旧描述"],
+                appServerTitles: appServerTitles
+            ),
+            "构建 Air75 Agent Bridge macOS 应用"
+        )
+    }
+
+    func testCodexSidebarTitlesOverrideIndexedTitles() throws {
+        let data = """
+        {"wrapper":{"thread-descriptions-v1":{
+          "thread-1":"左侧栏名称",
+          "thread-2":"  ",
+          "thread-3":"Renamed task"
+        }}}
+        """.data(using: .utf8)!
+        let titles = CodexSidebarTitleIndex.titles(in: data)
+        XCTAssertEqual(titles, ["thread-1": "左侧栏名称", "thread-3": "Renamed task"])
+        XCTAssertEqual(
+            CodexSidebarTitleIndex.preferredTitle(
+                for: "thread-1", indexedTitle: "旧标题", sidebarTitles: titles
+            ),
+            "左侧栏名称"
+        )
+        XCTAssertEqual(
+            CodexSidebarTitleIndex.preferredTitle(
+                for: "thread-2", indexedTitle: "数据库兜底", sidebarTitles: titles
+            ),
+            "数据库兜底"
+        )
+    }
+
     func testCodexKeybindingInstallerPreservesExistingBindingsAndInstallsDirectCommands() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let codexHome = root.appendingPathComponent(".codex", isDirectory: true)
@@ -110,12 +155,13 @@ final class CoreTests: XCTestCase {
         }
         try store.save(legacy)
         let migrated = store.load()
-        XCTAssertEqual(migrated.schemaVersion, 8)
+        XCTAssertEqual(migrated.schemaVersion, 9)
         XCTAssertEqual(migrated.keyBindings.map(\.usage), Array(0x3A...0x45))
         XCTAssertEqual(migrated.agentLightingEnabled, true)
         XCTAssertFalse(migrated.overlayEnabled)
         XCTAssertEqual(migrated.resolvedTaskLightPalette, .default)
         XCTAssertEqual(migrated.sidelightRestoredAfterSignalLights, false)
+        XCTAssertEqual(migrated.resolvedAgentSourceMode, .recent)
     }
 
     func testProfileRegistrySelectsExactModelAndGatesHardwareDrivers() {
@@ -209,6 +255,31 @@ final class CoreTests: XCTestCase {
 
         let failed = started + Data("\n{\"timestamp\":\"2026-07-19T05:00:05.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"error\"}}".utf8)
         XCTAssertEqual(CodexRolloutStatusParser.parse(data: failed, now: now).state, .error)
+    }
+
+    func testCodexDesktopConfirmationCardAndActiveThreadParsing() {
+        let log = """
+        ignored line
+        thread_stream_view_activity_changed active=true conversationId=thread-a rendererWindowId=1
+        thread_stream_view_activity_changed active=false conversationId=thread-a rendererWindowId=1
+        thread_stream_view_activity_changed active=true conversationId=thread-b rendererWindowId=1
+        """
+        XCTAssertEqual(CodexDesktopConfirmationState.activeThreadID(in: log), "thread-b")
+        XCTAssertTrue(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation([
+            "暂不 Esc", "安装 ↵"
+        ]))
+        XCTAssertTrue(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation([
+            "Decline", "Approve once", "Always allow"
+        ]))
+        XCTAssertTrue(CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation([
+            "安装 ↵"
+        ]))
+        XCTAssertFalse(CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation([
+            "继续", "新建任务"
+        ]))
+        XCTAssertFalse(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation([
+            "搜索", "新建任务", "插件"
+        ]))
     }
 }
 

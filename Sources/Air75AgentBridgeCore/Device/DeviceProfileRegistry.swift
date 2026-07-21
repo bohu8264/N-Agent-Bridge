@@ -95,7 +95,8 @@ public extension DeviceProfile {
             keymapByteCount: Air75V3KeymapController.keymapByteCount,
             hasKnob: true,
             hasSidelight: true,
-            supportsWirelessConfiguration: true
+            supportsWirelessConfiguration: true,
+            signalLightLayoutID: "nuphy.air75-v3.ansi-d8"
         )
     )
 }

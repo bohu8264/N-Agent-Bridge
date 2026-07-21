@@ -1,6 +1,64 @@
 # Progress
 
-更新时间：2026-07-20 CST
+更新时间：2026-07-21 CST
+
+## 0.11.5 已完成（使用 Codex 正式 Thread.name）
+
+- 用户截图复核证明 0.11.4 仍把主任务显示成最初长输入；原因是 `thread-descriptions-v1` 只覆盖部分短描述，并不是所有 Codex 左侧任务名的最终来源。
+- 根据当前 Codex app-server schema，`thread/list` 的 `Thread.name` 是“Optional user-facing thread title”，`preview` 则是首条用户消息。真实本机返回已验证：线程 `019f77d0-483a-7450-ab0e-b382c73c8738` 的 `name` 为“构建 Air75 Agent Bridge macOS 应用”，`preview` 是旧长输入。
+- 新增只读 `CodexDesktopTitleObserver`：保持独立 app-server 连接，每两秒调用 `thread/list(useStateDbOnly: true)`；只转发 ID 和 `name`，立即丢弃且不记录 `preview`。主任务、历史任务和用户改名都使用相同字段实时同步。
+- 标题优先级改为 app-server `Thread.name` → Codex 持久化短描述 → SQLite 兼容标题。项目层级仍由 Codex 全局状态提供，稳定绑定仍使用 thread ID。
+- Debug App 编译和 software-only SelfTest 通过，新增 app-server `name`/`preview` 分离与标题优先级测试；安装后的 N Agent Bridge 已确认启动标题同步子进程。
+- Universal（arm64 + x86_64）Release、固定签名、DMG CRC/结构验证及 0.11.5 (32) 原位安装通过。Development DMG：`dist/NAgentBridge-0.11.5-Development.dmg`；SHA-256：`ed5405920788f1883d85387eabbaee1312debe7788cf1f4feed4db14c9a944b7`。
+
+## 0.11.4 已完成（任务名与 Codex 左侧栏实时一致）
+
+- 定位项目名正确但任务名不同：项目来自 `.codex-global-state.json`，旧实现的任务名却取自 SQLite `threads.title`；新任务的该字段经常为空，旧任务也可能保留最初长输入，并不是 Codex 左侧栏最终显示名。
+- 新增 `CodexSidebarTitleIndex`，只读取 Codex 全局状态的 `thread-descriptions-v1` 短名称；自定义分配、当前选择和六槽标题均以该值为权威来源，SQLite 标题只在缺失时兜底。
+- 状态观察器原有的一秒轮询会同时比较标题字段，因此 Codex 自动生成或更新任务名称后，无需重启 N Agent Bridge 即可同步。
+- Debug App 编译通过；新增三项软件测试通过：精确解析可见名称、左侧栏名称覆盖旧 SQLite 标题、缺失时安全兜底。
+- Universal（arm64 + x86_64）Release、固定签名、DMG CRC/结构验证、六型号 App Bundle 资源验证及 0.11.4 (31) 原位安装均通过；升级后输入监控、辅助功能和 HID manager 仍正常。
+- Development DMG：`dist/NAgentBridge-0.11.4-Development.dmg`；SHA-256：`ceefc1dcdebdbe5f02d4599829ff636b708ff83253b3073768793fe058e3f906`。
+- 后续用户目视验收发现主任务仍未被 `thread-descriptions-v1` 覆盖；该版本的标题来源结论不完整，已由 0.11.5 的正式 `Thread.name` 链路取代。
+
+## 0.11.3 已完成（Codex 确认卡实时橙灯）
+
+- 定位“是否安装 Google Calendar?”没有橙灯：该界面属于 `mcpServer/elicitation/request` 表单确认，Codex rollout 不写入请求事件；另起 app-server 也看不到 Desktop 私有进程中的实时 `waitingOnUserInput`。
+- 新增 `CodexDesktopConfirmationObserver`：只读取 Codex 当前窗口的按钮角色/标签，不读取静态文本、提示词或回答；识别“暂不 + 安装”“拒绝 + 批准/允许”等确认组合。
+- 从 Codex Desktop 自身活动日志只解析 `active` 与 `conversationId` 两个结构字段，把可见确认卡精确覆盖到对应线程；卡片处理后自动撤销橙色，状态解析和 D8 实体灯同步不再依赖侧栏位置。
+- 采用 750ms 轻量焦点检查、30 秒低频完整校验；进入确认状态后最多 5 秒复核消失，避免持续遍历 Electron 辅助功能树造成高 CPU。
+- Debug App 编译通过，72 项 software-only SelfTest 通过；真实当前 Codex 无确认卡时辅助功能诊断为 `waiting=false`，未误判普通界面。
+- Universal（arm64 + x86_64）Release、固定签名、DMG CRC/结构验证及 0.11.3 (30) 原位安装均通过；安装后输入监控、辅助功能和 HID manager 复核正常，N Agent Bridge 进程正在运行。
+- Development DMG：`dist/NAgentBridge-0.11.3-Development.dmg`；SHA-256：`6970953549389ab1b5b7ca85e7aee5e7f9719aaf4c11788c7a38f96deb9c8402`。真实确认卡出现时的实体橙灯仍需用户下一次卡片弹出时完成最终目视验收。
+
+## 0.11.2 已完成（自定义分配匹配 Codex 左侧栏）
+
+- 复核 Codex Micro 官方说明，确认产品中的最近对话、置顶对话、优先对话、自定义分配正是官方四种 Agent 来源模式，名称与核心排序/空槽行为保持不变。
+- 自定义分配不再把最近 50 个长标题放进一个扁平菜单；应用只读 Codex 自己的 `local-projects`、`project-order` 和 `thread-project-assignments`，按左侧栏项目名称与顺序建立原生二级菜单，再显示该项目下的具体对话。
+- 每个 Agent 槽位的当前选择同时显示项目名和紧凑对话标题；长标题在菜单中单行截断，悬停当前选择仍可查看完整标题；无项目对话统一放在“其他对话”。
+- 轻量候选目录扩大到最近 500 个未归档用户对话，实际 rollout 状态仍只解析最近 50 个以及置顶/自定义精确 ID，避免为了选择旧对话每秒读取大量历史文件。
+- Debug build 与 66 项 software-only SelfTest 通过；本机 Codex 状态中 12 个项目均有官方名称，35 个当前用户对话全部进入 500 条候选范围。历史已删除项目不会再单独出现，无法匹配当前项目的旧对话统一进入“其他对话”。
+- Universal（arm64 + x86_64）Release、固定签名、DMG CRC/结构验证与 0.11.2 (29) 原位安装通过；实机菜单目视确认项目名与当前 Codex 左侧栏一致，且未执行任何对话绑定。Development DMG：`dist/NAgentBridge-0.11.2-Development.dmg`；SHA-256：`ec7fe6b360cf12474705643c8fe50f25fe48f53c112299c801a1bd47c03f35de`。
+
+## 0.11.1 已完成（长任务蓝灯保持与休眠补发）
+
+- 复现长任务仍运行但 F1 变白：rollout 超过 1.5 MB 后，最早的 `turn_started` 离开尾部读取窗口；旧解析器没有把后续 `agent_reasoning`、reasoning response、工具调用/输出当作独立运行信号，因此从空闲初值开始误判为白灯。
+- 后续推理、Agent 消息、工具调用和输出现在都能独立维持蓝灯；显式 `turn_complete/task_complete`、中止和错误事件仍拥有最终状态优先级。
+- 状态观察器每 30 秒提供一次无内容心跳；存在蓝/绿/橙/红状态时，应用最多每 90 秒补发一次 D8。Mac 唤醒、应用重新激活或键盘超过 30 秒后的首次活动也会清除写入缓存并重新同步，修复固件休眠后丢失临时颜色。
+- 当前真实长任务只读演练已从错误的 `F1 idle` 变为 `F1 reasoning`；Debug build、66 项 software-only SelfTest、Universal（arm64 + x86_64）Release App、签名及 DMG CRC/结构验证通过。
+- Development DMG：`dist/NAgentBridge-0.11.1-Development.dmg`；SHA-256：`78fcb58be4d231c68451e53dc20839894c14786ac5e3a00325bd53baa2964f4b`。
+- 已从 0.11.0 原位升级 `/Applications/N Agent Bridge.app` 至 0.11.1 (28)：固定签名验证通过、进程正常运行、`LightingAvailable=1`，应用诊断为“六个 Agent 状态已同步到各自实体键；侧灯保持用户灯效”。
+
+## 0.11.0 已完成（稳定 Agent 身份、改键跟灯、多型号安全接入）
+
+- 对照官方 Codex Micro 文档实现最近对话、置顶对话、优先对话、自定义分配四种 Agent 来源模式；置顶模式读取 Codex 自己的有序 `pinned-thread-ids`，六槽使用线程 ID，不再使用侧栏行号作为身份。
+- Agent 键改为 `codex://threads/<thread-id>` 精确打开；单击可后台切换，350ms 内双击激活 Codex。自定义空键会新建对话，并在本地索引出现新 ID 后自动绑定。
+- 线程索引新增标题、项目目录、recency 与未读 ID 元数据；仍不读取提示词、回答正文或预览。完成且未读保持绿色，优先模式按待确认/报错、未读、运行、最近活动排序。
+- `KeyBinding` 新增可选 D8 灯位。Air75 V3 ANSI 根据官方 NuPhyIO 可见键顺序和 skip 规则映射常用键；Agent 1–6 改到数字、字母、F 区或导航键时灯光随实体位置保存和交换，旧 F1–F6 会被清除。
+- 普通侧灯已有五种灯效的基础上，新增侧灯常亮颜色选择；Codex 状态继续只写 Agent 实体键，不接管侧灯。
+- 新增 Air65 V3、Air100 V3、Kick75、Node75、Node100 官方 USB PID/产品别名 Profile；这些型号可启用安全软件按键模式，硬件写入 driver 仍等待逐型号实机备份、ACK、回读和恢复验证。
+- 配置升级到 schema 9；64 项 `Air75CoreSelfTest --software-only`、六型号 App Bundle 资源加载、Universal（arm64 + x86_64）Release App、固定本机签名、DMG CRC/结构验证全部通过。
+- Development DMG：`dist/NAgentBridge-0.11.0-Development.dmg`；SHA-256：`e9d4cfc8bb68e922832331ad0e6933901c1bbf75d03d36fb769b6706e866ad22`。Air75 V3 新灯位与四种 Agent 模式仍需要用户在真实 Codex 工作流中完成目视验收；其他五型号的硬件写入按安全策略等待各型号实机验证。
 
 ## 0.10.1 已完成（修正 F1–F6 索引，侧灯恢复官方灯效）
 
