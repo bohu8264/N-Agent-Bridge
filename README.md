@@ -10,20 +10,20 @@ N Agent Bridge 是一个原生 macOS 工具，把受支持的 NuPhy 键盘变成
 
 ## 下载与安装
 
-当前可下载版本为 **0.13.2 Development**：
+当前可下载版本为 **0.13.3 Development**：
 
-- [下载 0.13.2 测试版 DMG](https://github.com/bohu8264/N-Agent-Bridge/releases/download/v0.13.2-development/NAgentBridge-0.13.2-Development.dmg)
-- [查看 0.13.2 发布说明、安装包与源码包](https://github.com/bohu8264/N-Agent-Bridge/releases/tag/v0.13.2-development)
-- SHA-256：`83b95375a3dbc8cc6643dff976178a9315194353b39d49cca23b9d9957faeb28`
+- [下载 0.13.3 测试版 DMG](https://github.com/bohu8264/N-Agent-Bridge/releases/download/v0.13.3-development/NAgentBridge-0.13.3-Development.dmg)
+- [查看 0.13.3 发布说明、安装包与源码包](https://github.com/bohu8264/N-Agent-Bridge/releases/tag/v0.13.3-development)
+- SHA-256：`8b371286e6175a706200c761dd2c6779a238d40c6c77ea383b72b911886a6a37`
 
 安装步骤：
 
 1. 下载 DMG，把 **N Agent Bridge.app** 拖入“应用程序”。
 2. 第一次设置请使用 USB-C 数据线，并把受支持的 NuPhy 键盘切换到有线模式。
 3. 在 macOS“系统设置 → 隐私与安全性”中允许“输入监控”和“辅助功能”。
-4. 返回应用，点击“连接并启用”。0.13.2 会读取键盘真实配置，把实体 F1–F12 自动写成专用 F13–F24 事件并完整回读；Air75 V3 与 Node100 LP ANSI 首次配置还会自动选择“指示灯”背光。配置期间界面会明确显示“正在配置”，不会把尚未完成的异步事务误报为需要再次修复。
+4. 返回应用，点击“连接并启用”。0.13.3 会读取键盘真实配置，把实体 F1–F12 自动写成专用 F13–F24 事件并完整回读；Air75 V3 与 Node100 LP ANSI 首次配置还会自动选择“指示灯”背光。配置期间界面会明确显示“正在配置”，不会把尚未完成的异步事务误报为需要再次修复。
 
-从旧版升级、更新过键盘固件或换到另一台 Mac 后，也请用 USB-C 再点一次“连接并启用”。应用不会只相信旧的“已配置”记录，因此不会留下同时触发 Codex 动作和 macOS 原生功能的 F1–F12。0.13.2 还会精准修复 0.13.1 个别首次配置留下的 `F13 / F15 / Tab / F16…` 异常序列为连续 F13–F24，同时保留真正的用户自定义键。历史推理事件 30 分钟没有新活动会自动回到空闲，不再让无任务槽位长期误亮蓝灯。
+从旧版升级、更新过键盘固件或换到另一台 Mac 后，也请用 USB-C 再点一次“连接并启用”。应用不会只相信旧的“已配置”记录，因此不会留下同时触发 Codex 动作和 macOS 原生功能的 F1–F12。0.13.3 会精准修复 0.13.1 个别首次配置留下的 `F13 / F15 / Tab / F16…` 异常序列，并主动熄灭固件中持久保存的旧 Tab 状态灯颜色，同时保留真正的用户自定义键。历史推理事件 30 分钟没有新活动会自动回到空闲，不再让无任务槽位长期误亮蓝灯。
 
 当前免费测试包使用项目自签名证书，并未经过 Apple 公证。若 macOS 阻止首次打开，请到“系统设置 → 隐私与安全性”确认来源后选择“仍要打开”。不要关闭整个系统的 Gatekeeper。
 

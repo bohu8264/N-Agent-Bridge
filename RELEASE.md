@@ -1,5 +1,13 @@
 # Release
 
+## 0.13.3 Development Build
+
+- 版本：`0.13.3 (51)`。
+- 主动清除 Air75 V3 旧版异常 Agent 3→Tab 绑定在固件 index 30 中留下的持久单键颜色；默认状态只保留当前六个 Agent 实体键。
+- 用户真的把 Agent 自定义到 Tab 时，当前绑定优先，Tab 仍按任务状态显示；清理不影响 Kick75 或 Node100。
+- software-only SelfTest、Universal（arm64 + x86_64）App、固定签名、Bundle 资源与 DMG CRC/结构验证：通过。
+- Development DMG SHA-256：`8b371286e6175a706200c761dd2c6779a238d40c6c77ea383b72b911886a6a37`。
+
 ## 0.13.2 Development Build
 
 - 版本：`0.13.2 (50)`。

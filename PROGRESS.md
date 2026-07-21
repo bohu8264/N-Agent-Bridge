@@ -2,6 +2,13 @@
 
 更新时间：2026-07-21 CST
 
+## 0.13.3 已完成（清理 Air75 V3 遗留 Tab 状态灯）
+
+- 0.13.2 已把异常 Agent 3 绑定从 Tab 恢复到 F15，但 `0xD8 SetSignalLights` 的单键颜色由固件持久保存；应用重启后只记得当前六个 F 区灯位，因此没有再覆盖 Air75 V3 的 Tab index 30，造成默认 Tab 仍亮。
+- Air75 V3 每次六任务同步现在都会把该历史 Tab 灯位加入待清理集合并写为黑色；如果用户主动把任一 Agent 动作重新分配到 Tab，当前活动灯位优先，Tab 会继续按真实任务状态显示，不会被清理逻辑误关。
+- 清理严格限定 `nuphy.air75-v3.ansi-d8`，不会把 Air75 的 index 30 套到 Kick75 或 Node100。software-only SelfTest 新增型号隔离回归并通过。
+- Universal（arm64 + x86_64）固定签名 App、Bundle 资源、DMG CRC/结构验证通过。Development DMG SHA-256：`8b371286e6175a706200c761dd2c6779a238d40c6c77ea383b72b911886a6a37`。
+
 ## 0.13.2 已完成（朋友电脑异常快捷键与首次配置时序修复）
 
 - 根据朋友电脑截图定位到完整异常绑定为 `F13 / F15 / Tab / F16…F24`；其来源是安装前 `F1 / F15 / Tab / F4…F12` 中只有普通 F 区被转换，F15 与 Tab 因都是合法自定义 Usage 而被旧逻辑保留。

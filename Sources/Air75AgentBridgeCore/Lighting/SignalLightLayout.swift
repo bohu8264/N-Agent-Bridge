@@ -5,6 +5,15 @@ import Foundation
 /// entries after Insert are removed by the device's `skipPos/skipSize` rule.
 /// Index 0 (Esc) and 1...6 (F1...F6) have also been confirmed on hardware.
 public enum SignalLightLayout {
+    /// D8 colors persist independently from the ordinary animation. A 0.13.1
+    /// first-run bug temporarily assigned Agent 3 to Tab on Air75 V3, leaving
+    /// index 30 illuminated even after the binding itself was repaired. Keep
+    /// this model-specific cleanup list separate from valid current bindings;
+    /// an intentionally reassigned Agent key at the same index remains active.
+    public static func staleManagedIndices(layoutID: String?) -> Set<Int> {
+        layoutID == "nuphy.air75-v3.ansi-d8" ? [30] : []
+    }
+
     public static func index(
         layoutID: String?,
         usagePage: Int,

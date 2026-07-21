@@ -1406,7 +1406,11 @@ final class BridgeStore: ObservableObject {
                   (0...255).contains(value) else { return nil }
             return UInt8(value)
         })
-        let indicesToClear = managedSignalLightIndices.union(Air75V3LightingController.taskSignalLightIndices)
+        let staleIndices = Set(SignalLightLayout.staleManagedIndices(layoutID: currentSignalLightLayoutID)
+            .compactMap { (0...255).contains($0) ? UInt8($0) : nil })
+        let indicesToClear = managedSignalLightIndices
+            .union(Air75V3LightingController.taskSignalLightIndices)
+            .union(staleIndices)
             .subtracting(activeIndices)
         for index in indicesToClear { desiredByIndex[index] = Air75SignalLight(index: index, color: off) }
         for (taskIndex, action) in actions.enumerated() {

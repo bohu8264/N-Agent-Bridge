@@ -142,6 +142,8 @@ final class CoreTests: XCTestCase {
                        [0x00, 0xFF, 0x00, 0x00, 0x01, 0x00, 0xFF, 0x00])
         XCTAssertEqual(Air75V3LightingController.escapeSignalLightIndex, 0)
         XCTAssertEqual(Air75V3LightingController.taskSignalLightIndices, [1, 2, 3, 4, 5, 6])
+        XCTAssertEqual(SignalLightLayout.staleManagedIndices(layoutID: "nuphy.air75-v3.ansi-d8"), [30])
+        XCTAssertTrue(SignalLightLayout.staleManagedIndices(layoutID: "nuphy.kick75.ansi-d8").isEmpty)
     }
 
     func testLegacyF13ConfigurationMigratesToPhysicalKeys() throws {

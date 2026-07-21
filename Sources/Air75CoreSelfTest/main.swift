@@ -253,6 +253,10 @@ check(d8Example == [0x00, 0xFF, 0x00, 0x00, 0x01, 0x00, 0xFF, 0x00],
       "D8 signal light payload matches firmware protocol")
 check(Air75V3LightingController.taskSignalLightIndices == [1, 2, 3, 4, 5, 6],
       "Air75 V3 F1-F6 use firmware indicator indexes 1-6; index 0 is Esc")
+check(SignalLightLayout.staleManagedIndices(layoutID: "nuphy.air75-v3.ansi-d8") == [30],
+      "Air75 V3 clears the stale Tab indicator left by the 0.13.1 binding bug")
+check(SignalLightLayout.staleManagedIndices(layoutID: "nuphy.kick75.ansi-d8").isEmpty,
+      "Air75 V3 stale Tab cleanup does not affect Kick75")
 check(SignalLightLayout.index(layoutID: "nuphy.air75-v3.ansi-d8", usagePage: 0x07, usage: 0x1E) == 16,
       "Air75 V3 number 1 resolves to official-layout light index")
 check(SignalLightLayout.index(layoutID: "nuphy.air75-v3.ansi-d8", usagePage: 0x07, usage: 0x68) == 1,
