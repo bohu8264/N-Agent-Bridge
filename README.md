@@ -6,15 +6,17 @@
 
 N Agent Bridge 是面向 **NuPhy Air75 V3 ANSI** 的原生 macOS 工具，把键盘的 F 区与旋钮变成 Codex Desktop 实体控制台。当前版本只保留 Air75 V3，避免把未验证协议写入其他型号。
 
+N Agent Bridge is a native macOS utility for **NuPhy Air75 V3 ANSI** that turns the function row and knob into physical controls for Codex Desktop. The app now includes a complete English interface and follows the Mac language on first launch; it can also be switched anytime in Settings.
+
 > 独立第三方开源项目，与 OpenAI、Codex 或 NuPhy 无隶属关系。
 
 ## 下载
 
-当前版本：**0.14.2 Development**，适配 NuPhy Air75 V3 官方固件 **1.0.16.6**。
+当前版本：**0.15.0 Development**，适配 NuPhy Air75 V3 官方固件 **1.0.16.6**。
 
-- [下载 0.14.2 DMG](https://github.com/bohu8264/N-Agent-Bridge/releases/download/v0.14.2-development/NAgentBridge-0.14.2-Development.dmg)
-- [发布说明与源码](https://github.com/bohu8264/N-Agent-Bridge/releases/tag/v0.14.2-development)
-- SHA-256：`9e5cf34158d0259521778292e23330902f9cd11c2c1fc506d898744703428ed6`
+- [下载 0.15.0 DMG](https://github.com/bohu8264/N-Agent-Bridge/releases/download/v0.15.0-development/NAgentBridge-0.15.0-Development.dmg)
+- [发布说明与源码](https://github.com/bohu8264/N-Agent-Bridge/releases/tag/v0.15.0-development)
+- SHA-256：`154540aac81c1bc7f7a1ebb0924cc7a1a22d1aaff48517e960eaa9b686b5592e`
 
 Development 包使用项目固定自签名证书，未经过 Apple 公证。macOS 第一次拦截时，请到“系统设置 → 隐私与安全性”选择“仍要打开”，不要关闭整个 Gatekeeper。
 
@@ -26,7 +28,13 @@ Development 包使用项目固定自签名证书，未经过 Apple 公证。macO
 4. 在 macOS“隐私与安全性”中允许 N Agent Bridge 的“输入监控”和“辅助功能”，然后退出并重新打开 App。
 5. 点击“连接并启用”，等待应用完成键位备份、F13–F24 写入、完整回读和指示灯初始化。
 
-macOS 的两项权限都必须由用户本人批准，安装包不能静默授予。完整说明见 [中文使用说明](docs/USER-GUIDE.zh-CN.md)。
+macOS 的两项权限都必须由用户本人批准，安装包不能静默授予。完整说明见 [中文使用说明](docs/USER-GUIDE.zh-CN.md) 或 [English User Guide](docs/USER-GUIDE.en.md)。
+
+## Language / 界面语言
+
+- 新安装会自动跟随 macOS：中文系统显示中文，其他系统默认显示 English。
+- 在“设置 → 通用 → 界面语言”中可随时选择“中文”或“English”，无需重启。
+- The entire app, onboarding flow, menu-bar controls, settings, lighting controls, and runtime overlays switch immediately.
 
 ## 功能
 

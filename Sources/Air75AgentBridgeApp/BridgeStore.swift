@@ -1888,6 +1888,12 @@ final class BridgeStore: ObservableObject {
 
     private func showOverlay(_ title: String, detail: String) {
         guard configuration.overlayEnabled else { return }
-        overlay.show(title: title, detail: detail, slots: slots, selectedSlot: selectedSlot)
+        let language = InterfaceLanguage.saved
+        overlay.show(
+            title: language.runtimeText(title),
+            detail: language.runtimeText(detail),
+            slots: slots,
+            selectedSlot: selectedSlot
+        )
     }
 }

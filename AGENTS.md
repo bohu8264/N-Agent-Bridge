@@ -4,7 +4,7 @@
 
 ## 当前基线
 
-- 产品：N Agent Bridge `0.14.2 (56)`
+- 产品：N Agent Bridge `0.15.0 (57)`
 - Bundle ID：`com.nagentbridge.mac`
 - 固定本地签名：`N Agent Bridge Local Signing`
 - 目标固件：Air75 V3 官方 `1.0.16.6`

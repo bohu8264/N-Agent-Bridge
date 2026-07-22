@@ -5,11 +5,26 @@ import SwiftUI
 @main
 struct Air75AgentBridgeApp: App {
     @StateObject private var store = BridgeStore()
+    @AppStorage("interfaceLanguage") private var interfaceLanguageRawValue = InterfaceLanguage.systemDefault.rawValue
+
+    private var interfaceLanguage: InterfaceLanguage {
+        InterfaceLanguage(rawValue: interfaceLanguageRawValue) ?? .systemDefault
+    }
+
+    private var interfaceLanguageSelection: Binding<InterfaceLanguage> {
+        Binding(
+            get: { interfaceLanguage },
+            set: { interfaceLanguageRawValue = $0.rawValue }
+        )
+    }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
+                .environment(\.interfaceLanguage, interfaceLanguage)
+                .environment(\.interfaceLanguageSelection, interfaceLanguageSelection)
+                .environment(\.locale, interfaceLanguage.locale)
                 .background(WindowPlacementGuard())
                 .frame(minWidth: 860, minHeight: 620)
         }
@@ -24,15 +39,21 @@ struct Air75AgentBridgeApp: App {
                         .frame(width: 28, height: 28)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("N Agent Bridge").font(.headline)
-                        Text(store.currentDevice == nil ? "等待键盘连接" : "已连接 · 可以使用")
+                        Text(store.currentDevice == nil
+                             ? interfaceLanguage.text("等待键盘连接", "Waiting for keyboard")
+                             : interfaceLanguage.text("已连接 · 可以使用", "Connected · Ready"))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 Divider()
-                Text(store.configuration.enabled ? "Codex 控制已开启" : "Codex 控制已停止")
+                Text(store.configuration.enabled
+                     ? interfaceLanguage.text("Codex 控制已开启", "Codex control is on")
+                     : interfaceLanguage.text("Codex 控制已停止", "Codex control is off"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button(store.configuration.enabled ? "停止并恢复键盘" : "启用控制") {
+                Button(store.configuration.enabled
+                       ? interfaceLanguage.text("停止并恢复键盘", "Stop and restore keyboard")
+                       : interfaceLanguage.text("启用控制", "Enable control")) {
                     if store.configuration.enabled && !store.currentHardwareProfileNeedsInstallation {
                         store.disable()
                     } else {
@@ -40,8 +61,8 @@ struct Air75AgentBridgeApp: App {
                     }
                 }
                 Divider()
-                Button("打开 N Agent Bridge") { NSApp.activate(ignoringOtherApps: true); NSApp.windows.first?.makeKeyAndOrderFront(nil) }
-                Button("退出") { NSApp.terminate(nil) }
+                Button(interfaceLanguage.text("打开 N Agent Bridge", "Open N Agent Bridge")) { NSApp.activate(ignoringOtherApps: true); NSApp.windows.first?.makeKeyAndOrderFront(nil) }
+                Button(interfaceLanguage.text("退出", "Quit")) { NSApp.terminate(nil) }
             }.padding(10).frame(width: 240)
         } label: {
             Label("N Agent Bridge", systemImage: store.currentDevice == nil ? "keyboard.badge.ellipsis" : "keyboard.fill")

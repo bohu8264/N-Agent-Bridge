@@ -13,3 +13,15 @@ N Agent Bridge 安装说明
 其他布局或型号当前不受支持，应用不会向其固件写入任何配置。
 
 项目主页：https://github.com/bohu8264/N-Agent-Bridge
+
+English
+
+1. Drag “N Agent Bridge.app” to “Applications”. Do not run it from the DMG.
+2. This free Development build is not Apple-notarized. If macOS blocks it, open System Settings → Privacy & Security → Open Anyway. Do not disable Gatekeeper.
+3. Allow Input Monitoring and Accessibility, then fully quit and reopen the app.
+4. For first-time setup, use a USB-C data cable, select wired mode, and fully close NuPhyIO.
+5. Click Connect and Enable / Configure, then wait for full keymap readback before unplugging.
+6. The app follows the Mac language on first launch. Switch anytime in Settings → General → Interface Language.
+
+Current support: NuPhy Air75 V3 ANSI with official firmware 1.0.16.6 only.
+Project: https://github.com/bohu8264/N-Agent-Bridge
