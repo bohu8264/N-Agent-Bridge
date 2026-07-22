@@ -10,6 +10,7 @@
 - 新增中文、英文、隐藏卡片、单按钮、普通确认框、命名工具输出与无关 approval 元数据回归检查。`Air75CoreSelfTest --software-only` 全部通过，Universal App 完整编译通过。
 - 本机已安装 `0.14.1 (55)` 并冷启动验证：Air75 V3 识别正常、`LightingAvailable=1`，无确认卡片时 `CodexVisibleConfirmationWaiting=0`，延时复查没有重新变橙。
 - 本地 Development DMG：`dist/NAgentBridge-0.14.1-Development.dmg`；CRC 有效，SHA-256：`83edbae8f6b88c101ab1f976314a0b4c26dc7ccc70f21d5a8aff8f9edb239fa3`。固定自签名证书未加入系统信任链，因此严格 `codesign --verify` 返回 `CSSMERR_TP_NOT_TRUSTED`；包内容、指定要求与双架构均正常。
+- 源码已推送到公开仓库，`v0.14.1-development` Pre-release 已上传 Universal DMG 与 GitHub 自动生成的源码压缩包；0.14.0 保留且未覆盖。
 
 ## 0.14.0：Air75 V3 官方固件 1.0.16.6 专版
 
