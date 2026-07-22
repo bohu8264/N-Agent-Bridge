@@ -1,6 +1,15 @@
 # Progress
 
-更新时间：2026-07-21 CST
+更新时间：2026-07-22 CST
+
+## 0.14.1：橙色确认灯误判修复
+
+- Codex 辅助功能扫描现在只读取当前焦点窗口；`AXVisibleChildren` 明确为空时视为隐藏，不再遍历 Electron 保留的已关闭卡片和离屏窗口。
+- 单个“安装 / 允许 / 批准”按钮不再足以点亮橙灯。只有同一个可见控件组同时出现权限类肯定动作与拒绝动作，才判定为正在等待用户确认；普通“确认 / 取消”界面不会误触发。
+- rollout 状态解析改为只接受明确的 `request_user_input`、approval request 或 permission request 事件；带 `approval` 字样的普通元数据不再误判，工具输出和已完成/拒绝的确认结果会立即清除等待状态。
+- 新增中文、英文、隐藏卡片、单按钮、普通确认框、命名工具输出与无关 approval 元数据回归检查。`Air75CoreSelfTest --software-only` 全部通过，Universal App 完整编译通过。
+- 本机已安装 `0.14.1 (55)` 并冷启动验证：Air75 V3 识别正常、`LightingAvailable=1`，无确认卡片时 `CodexVisibleConfirmationWaiting=0`，延时复查没有重新变橙。
+- 本地 Development DMG：`dist/NAgentBridge-0.14.1-Development.dmg`；CRC 有效，SHA-256：`83edbae8f6b88c101ab1f976314a0b4c26dc7ccc70f21d5a8aff8f9edb239fa3`。固定自签名证书未加入系统信任链，因此严格 `codesign --verify` 返回 `CSSMERR_TP_NOT_TRUSTED`；包内容、指定要求与双架构均正常。
 
 ## 0.14.0：Air75 V3 官方固件 1.0.16.6 专版
 

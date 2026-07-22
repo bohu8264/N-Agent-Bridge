@@ -337,6 +337,15 @@ let runningRollout = """
 let runningSnapshot = CodexRolloutStatusParser.parse(data: runningRollout, now: rolloutNow)
 check(runningSnapshot.threadID == "thread-1" && runningSnapshot.state == .reasoning,
       "Codex rollout running state")
+let waitingRollout = runningRollout + Data("\n{\"timestamp\":\"2026-07-19T05:00:02.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call\",\"name\":\"request_user_input\",\"status\":\"completed\"}}".utf8)
+check(CodexRolloutStatusParser.parse(data: waitingRollout, now: rolloutNow).state == .waitingForConfirmation,
+      "Codex user-input request enters confirmation state")
+let namedConfirmationOutput = waitingRollout + Data("\n{\"timestamp\":\"2026-07-19T05:00:04.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call_output\",\"name\":\"request_user_input\",\"status\":\"completed\"}}".utf8)
+check(CodexRolloutStatusParser.parse(data: namedConfirmationOutput, now: rolloutNow).state == .reasoning,
+      "named confirmation output clears waiting state")
+let unrelatedApprovalName = runningRollout + Data("\n{\"timestamp\":\"2026-07-19T05:00:04.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"agent_message\",\"name\":\"approval_policy\"}}".utf8)
+check(CodexRolloutStatusParser.parse(data: unrelatedApprovalName, now: rolloutNow).state == .reasoning,
+      "unrelated approval metadata does not request confirmation")
 let tailWithoutStart = """
 {"timestamp":"2026-07-19T05:00:06.000Z","type":"event_msg","payload":{"type":"agent_reasoning"}}
 {"timestamp":"2026-07-19T05:00:07.000Z","type":"response_item","payload":{"type":"custom_tool_call","status":"completed","name":"exec"}}
@@ -367,8 +376,10 @@ check(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(["暂不 Esc
       "Codex MCP installation card requires confirmation")
 check(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(["拒绝", "批准一次", "总是允许"]),
       "Codex permission card requires confirmation")
-check(CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation(["安装 ↵"]),
-      "focused Codex installation action is a fast confirmation signal")
+check(!CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation(["安装 ↵"]),
+      "single focused install action is not confirmation proof")
+check(CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation(["暂不 Esc", "安装 ↵"]),
+      "focused confirmation group requires both choices")
 check(!CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation(["继续", "新建任务"]),
       "generic focused actions do not trigger confirmation")
 check(!CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation(["请求批准"]),
@@ -379,6 +390,14 @@ check(!CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(["请求批
       "request-approval entrypoint cannot pair with unrelated cancel")
 check(!CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(["新建任务", "插件", "搜索"]),
       "normal Codex navigation is not a confirmation")
+check(!CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(["取消", "确认"]),
+      "generic confirm and cancel pair is not a permission request")
+check(!CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(["Cancel", "Confirm"]),
+      "English generic confirm and cancel pair is not a permission request")
+check(!CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(["不允许", "拒绝"]),
+      "negative Chinese labels cannot satisfy the affirmative marker")
+check(!CodexDesktopConfirmationState.buttonLabelsRequireConfirmation(["Disallow", "Decline"]),
+      "negative English labels cannot satisfy the affirmative marker")
 
 // 缓存的原始解析结果在每次轮询时重新计算衰减。
 let staleComplete = CodexTaskLightSnapshot(threadID: "t", state: .complete, eventDate: rolloutNow.addingTimeInterval(-61))

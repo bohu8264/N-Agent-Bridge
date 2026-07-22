@@ -60,9 +60,10 @@ final class CodexDesktopConfirmationObserver: @unchecked Sendable {
         if fullScan {
             waiting = detectedNow
         } else if detectedNow {
-            // A focused approval button is immediate proof. A lightweight
-            // negative result is not enough to clear an already visible card;
-            // the bounded full scan confirms removal within five seconds.
+            // A compact button group around the focused element is immediate
+            // proof. A lightweight negative result is not enough to clear an
+            // already visible card; the bounded full scan confirms removal
+            // within five seconds.
             waiting = true
             nextFullScanAt = min(nextFullScanAt, now.addingTimeInterval(5))
         }
@@ -84,7 +85,10 @@ final class CodexDesktopConfirmationObserver: @unchecked Sendable {
         let root = AXUIElementCreateApplication(application.processIdentifier)
         var stack: [AXUIElement]
         if fullScan {
-            stack = [root]
+            // Electron keeps hidden/off-screen windows and dismissed cards in
+            // the app accessibility tree. Restrict full scans to the current
+            // window so stale controls cannot create phantom orange lights.
+            stack = [focusedWindow(of: root) ?? root]
         } else if let focused = focusedElement(of: root) {
             stack = [focused]
         } else {
@@ -167,6 +171,12 @@ final class CodexDesktopConfirmationObserver: @unchecked Sendable {
         return unsafeBitCast(raw, to: AXUIElement.self)
     }
 
+    private static func focusedWindow(of root: AXUIElement) -> AXUIElement? {
+        guard let raw = attribute(kAXFocusedWindowAttribute, of: root),
+              CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
+        return unsafeBitCast(raw, to: AXUIElement.self)
+    }
+
     private static func attribute(_ name: String, of element: AXUIElement) -> AnyObject? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
@@ -190,9 +200,11 @@ final class CodexDesktopConfirmationObserver: @unchecked Sendable {
                 attribute(kAXChildrenAttribute, of: element) as? [AXUIElement] ?? []
             )
         }
-        let visible = values[1] as? [AXUIElement] ?? []
+        let visible = values[1] as? [AXUIElement]
         let regular = values[2] as? [AXUIElement] ?? []
-        return (values[0] as? String, visible.isEmpty ? regular : visible)
+        // An explicitly empty AXVisibleChildren list means this subtree is
+        // hidden. Fall back only when that attribute is unsupported.
+        return (values[0] as? String, visible ?? regular)
     }
 
     private static func buttonLabels(of element: AXUIElement) -> [String] {

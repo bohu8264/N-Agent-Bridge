@@ -304,6 +304,12 @@ final class CoreTests: XCTestCase {
         let resumed = waiting + Data("\n{\"timestamp\":\"2026-07-19T05:00:03.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call_output\"}}".utf8)
         XCTAssertEqual(CodexRolloutStatusParser.parse(data: resumed, now: now).state, .reasoning)
 
+        let namedOutput = waiting + Data("\n{\"timestamp\":\"2026-07-19T05:00:03.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call_output\",\"name\":\"request_user_input\",\"status\":\"completed\"}}".utf8)
+        XCTAssertEqual(CodexRolloutStatusParser.parse(data: namedOutput, now: now).state, .reasoning)
+
+        let unrelatedApprovalName = started + Data("\n{\"timestamp\":\"2026-07-19T05:00:03.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"agent_message\",\"name\":\"approval_policy\"}}".utf8)
+        XCTAssertEqual(CodexRolloutStatusParser.parse(data: unrelatedApprovalName, now: now).state, .reasoning)
+
         let completed = started + Data("\n{\"timestamp\":\"2026-07-19T05:00:04.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}".utf8)
         XCTAssertEqual(CodexRolloutStatusParser.parse(data: completed, now: now).state, .complete)
         let later = now.addingTimeInterval(CodexRolloutStatusParser.completionVisibleDuration + 1)
@@ -361,8 +367,11 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation([
             "Decline", "Approve once", "Always allow"
         ]))
-        XCTAssertTrue(CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation([
+        XCTAssertFalse(CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation([
             "安装 ↵"
+        ]))
+        XCTAssertTrue(CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation([
+            "暂不 Esc", "安装 ↵"
         ]))
         XCTAssertFalse(CodexDesktopConfirmationState.focusedButtonLabelsIndicateConfirmation([
             "继续", "新建任务"
@@ -381,6 +390,18 @@ final class CoreTests: XCTestCase {
         ]))
         XCTAssertFalse(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation([
             "搜索", "新建任务", "插件"
+        ]))
+        XCTAssertFalse(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation([
+            "取消", "确认"
+        ]))
+        XCTAssertFalse(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation([
+            "Cancel", "Confirm"
+        ]))
+        XCTAssertFalse(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation([
+            "不允许", "拒绝"
+        ]))
+        XCTAssertFalse(CodexDesktopConfirmationState.buttonLabelsRequireConfirmation([
+            "Disallow", "Decline"
         ]))
     }
 }

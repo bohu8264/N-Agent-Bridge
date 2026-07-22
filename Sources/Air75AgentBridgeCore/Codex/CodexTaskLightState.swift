@@ -251,12 +251,42 @@ public enum CodexRolloutStatusParser {
                 continue
             }
 
-            let approvalMarker = [payloadType, status, name].joined(separator: "_")
-            if approvalMarker.contains("approval")
-                || approvalMarker.contains("request_user_input")
-                || approvalMarker.contains("permission_request")
-                || approvalMarker.contains("waiting_on_user_input") {
+            // Outputs and resolved approval events close an earlier request.
+            // Some Codex builds repeat the original request_user_input name on
+            // the output; checking its name first used to relight orange.
+            let terminalApprovalStatuses: Set<String> = [
+                "approved", "accepted", "completed", "resolved",
+                "declined", "denied", "rejected", "cancelled", "canceled"
+            ]
+            let isToolOutput = payloadType.hasSuffix("_output")
+            let isApprovalResolution = payloadType.contains("approval_response")
+                || payloadType.contains("approval_result")
+                || payloadType.contains("permission_response")
+                || payloadType.contains("permission_result")
+            if isToolOutput || isApprovalResolution {
+                state = .reasoning
+                eventDate = parseDate(timestampValue)
+                continue
+            }
+
+            let isUserInputRequest = payloadType.contains("waiting_on_user_input")
+                || (name.contains("request_user_input")
+                    && (payloadType == "custom_tool_call"
+                        || !terminalApprovalStatuses.contains(status)))
+            let isApprovalRequest = payloadType.contains("request_approval")
+                || payloadType.contains("requestapproval")
+                || payloadType.contains("approval_request")
+                || payloadType.contains("permission_request")
+            if isUserInputRequest
+                || (isApprovalRequest && !terminalApprovalStatuses.contains(status)) {
                 state = .waitingForConfirmation
+                eventDate = parseDate(timestampValue)
+                continue
+            }
+
+            if (isApprovalRequest || name.contains("request_user_input")),
+               terminalApprovalStatuses.contains(status) {
+                state = .reasoning
                 eventDate = parseDate(timestampValue)
                 continue
             }

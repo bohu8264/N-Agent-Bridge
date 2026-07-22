@@ -22,25 +22,29 @@ public enum CodexDesktopConfirmationState {
         return activeThreadID
     }
 
-    /// Confirmation surfaces always present at least one affirmative action
-    /// and one way to decline/cancel. Requiring both groups prevents normal
-    /// Codex navigation buttons from turning an Agent key orange.
+    /// Confirmation surfaces always present at least one permission-specific
+    /// affirmative action and one permission-specific decline action. Generic
+    /// Confirm/Cancel and Continue/Later pairs occur throughout normal Codex
+    /// navigation and must never turn an Agent key orange.
     public static func buttonLabelsRequireConfirmation(_ labels: [String]) -> Bool {
         let normalized = confirmationActionLabels(labels)
         guard !normalized.isEmpty else { return false }
         let affirmativeMarkers = [
-            "安装", "允许", "批准", "确认", "同意", "授权",
-            "install", "allow", "approve", "confirm", "accept"
+            "安装", "允许", "批准", "授权",
+            "install", "allow", "approve", "accept"
         ]
         let negativeMarkers = [
-            "暂不", "拒绝", "取消", "不允许", "稍后",
-            "notnow", "deny", "decline", "reject", "cancel", "later"
+            "暂不", "拒绝", "不允许",
+            "notnow", "deny", "decline", "reject", "disallow"
         ]
-        let hasAffirmative = normalized.contains { label in
-            affirmativeMarkers.contains { label.contains($0) }
-        }
         let hasNegative = normalized.contains { label in
             negativeMarkers.contains { label.contains($0) }
+        }
+        let hasAffirmative = normalized.contains { label in
+            // "不允许" and "disallow" contain the affirmative token. A
+            // negative label must never satisfy both halves of the pair.
+            !negativeMarkers.contains(where: { label.contains($0) })
+                && affirmativeMarkers.contains(where: { label.contains($0) })
         }
         return hasAffirmative && hasNegative
     }
@@ -52,28 +56,22 @@ public enum CodexDesktopConfirmationState {
     public static func buttonLabelsContainConfirmationAction(_ labels: [String]) -> Bool {
         let normalized = confirmationActionLabels(labels)
         let markers = [
-            "安装", "允许", "批准", "确认", "同意", "授权",
-            "暂不", "拒绝", "取消", "不允许", "稍后",
-            "install", "allow", "approve", "confirm", "accept",
-            "notnow", "deny", "decline", "reject", "cancel", "later"
+            "安装", "允许", "批准", "授权",
+            "暂不", "拒绝", "不允许",
+            "install", "allow", "approve", "accept",
+            "notnow", "deny", "decline", "reject", "disallow"
         ]
         return normalized.contains { label in
             markers.contains { label.contains($0) }
         }
     }
 
-    /// A focused primary approval button is a sufficient fast-path signal.
-    /// Deliberately excludes generic actions such as "继续" so normal Codex
-    /// navigation and onboarding cannot be mistaken for a pending approval.
+    /// Focus alone is not proof of a pending approval. Electron can retain a
+    /// stale focused button after a card disappears, so the focused node must
+    /// itself expose both sides of an approval choice. The app observer then
+    /// verifies the compact parent button group for normal one-label buttons.
     public static func focusedButtonLabelsIndicateConfirmation(_ labels: [String]) -> Bool {
-        let normalized = confirmationActionLabels(labels)
-        let strongMarkers = [
-            "安装", "允许", "批准", "拒绝", "暂不", "不允许", "授权",
-            "install", "allow", "approve", "deny", "decline", "reject", "notnow"
-        ]
-        return normalized.contains { label in
-            strongMarkers.contains { label.contains($0) }
-        }
+        buttonLabelsRequireConfirmation(labels)
     }
 
     private static func confirmationActionLabels(_ labels: [String]) -> [String] {
