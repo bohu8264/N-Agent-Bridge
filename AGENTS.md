@@ -4,7 +4,7 @@
 
 ## 当前基线
 
-- 产品：N Agent Bridge `0.14.0 (54)`
+- 产品：N Agent Bridge `0.14.2 (56)`
 - Bundle ID：`com.nagentbridge.mac`
 - 固定本地签名：`N Agent Bridge Local Signing`
 - 目标固件：Air75 V3 官方 `1.0.16.6`
@@ -23,6 +23,7 @@
 6. D5 读取 handle 0/1，但 D6 只写 macOS handle 0。1.0.16.6 会规范化 Windows handle 1 的未使用元数据，禁止修改它。
 7. D8 写前用 D2 读取原色，写后 D2 精确回读；失败恢复。稀疏灯位按不超过 54-byte 的连续窗口读取。
 8. 键位表必须恰好 1568 bytes。密文、未知矩阵、混合半写状态不得保存成原始备份。
+   Air75 V3 官方 1.0.16.6 只允许第 8 层旋钮按下 p60 为空值 `0x0000`，安装时规范化为 `0x0048`；不得把空值白名单扩展到其他层或位置。
 9. 禁止发送 `0xEF SetIapMode`、`0xF1 RestoreFactory` 或猜测的固件命令。
 10. 不删除 `~/Library/Application Support/Air75AgentBridge/Backups`。
 

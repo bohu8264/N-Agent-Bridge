@@ -663,7 +663,8 @@ do {
         bytes[entry * 2 + 1] = UInt8(value & 0xFF)
     }
     for layer in 0..<8 {
-        setCode(0x00A8, entry: layer * 98 + 60)
+        // Official 1.0.16.6 may leave only the eighth-layer knob press empty.
+        setCode(layer == 7 ? 0x0000 : 0x00A8, entry: layer * 98 + 60)
         setCode(0x00AA, entry: layer * 98 + 96)
         setCode(0x00A9, entry: layer * 98 + 97)
     }
@@ -686,6 +687,20 @@ do {
           "rejects encrypted keymap reads before backup")
     check(code(60) == 0x0048 && code(96) == 0x0047 && code(97) == 0x0046,
           "hardware knob unique left-click-right events")
+    check(code(7 * 98 + 60) == 0x0048,
+          "eighth-layer empty knob press normalizes to dedicated event")
+
+    var wrongLayerEmpty = bytes
+    wrongLayerEmpty[6 * 98 * 2 + 60 * 2] = 0x00
+    wrongLayerEmpty[6 * 98 * 2 + 60 * 2 + 1] = 0x00
+    check(!Air75V3KeymapController.isPlausibleKeymap(wrongLayerEmpty),
+          "empty knob press remains rejected outside the eighth layer")
+
+    var unknownEighthLayerValue = bytes
+    unknownEighthLayerValue[(7 * 98 + 60) * 2] = 0x12
+    unknownEighthLayerValue[(7 * 98 + 60) * 2 + 1] = 0x34
+    check(!Air75V3KeymapController.isPlausibleKeymap(unknownEighthLayerValue),
+          "unknown eighth-layer knob value remains rejected")
 } catch {
     check(false, "hardware profile transform: \(error.localizedDescription)")
 }

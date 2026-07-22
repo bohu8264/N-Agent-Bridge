@@ -124,7 +124,15 @@ public final class Air75V3KeymapController: @unchecked Sendable {
             for item in knobEntries {
                 let index = layer * Self.entriesPerLayer + item.index
                 let current = keycode(in: profile, entry: index)
-                guard item.allowed.contains(current) else {
+                // Air75 V3 1.0.16.6 can leave the eighth-layer knob press
+                // unassigned. Accept that single verified factory variant,
+                // then normalize it to the same dedicated Pause event used by
+                // every other layer. Do not broaden the allowance to another
+                // layer, matrix position, or unknown keycode.
+                let isEighthLayerEmptyKnobPress = layer == 7
+                    && item.index == 60
+                    && current == 0x0000
+                guard item.allowed.contains(current) || isEighthLayerEmptyKnobPress else {
                     throw Air75KeymapError.incompatibleLayout(index: index, value: current)
                 }
                 setKeycode(item.replacement, in: &profile, entry: index)

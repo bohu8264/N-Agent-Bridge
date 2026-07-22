@@ -248,7 +248,7 @@ final class CoreTests: XCTestCase {
             bytes[entry * 2 + 1] = UInt8(value & 0xFF)
         }
         for layer in 0..<8 {
-            set(0x00A8, layer * 98 + 60)
+            set(layer == 7 ? 0x0000 : 0x00A8, layer * 98 + 60)
             set(0x00AA, layer * 98 + 96)
             set(0x00A9, layer * 98 + 97)
         }
@@ -260,8 +260,21 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(get(60), 0x0048)
         XCTAssertEqual(get(96), 0x0047)
         XCTAssertEqual(get(97), 0x0046)
+        XCTAssertEqual(get(7 * 98 + 60), 0x0048)
         XCTAssertTrue(Air75V3KeymapController.hasBridgeProfile(result))
         XCTAssertFalse(Air75V3KeymapController.hasBridgeProfile(bytes))
+
+        var wrongLayerEmpty = bytes
+        let wrongLayerOffset = (6 * 98 + 60) * 2
+        wrongLayerEmpty[wrongLayerOffset] = 0x00
+        wrongLayerEmpty[wrongLayerOffset + 1] = 0x00
+        XCTAssertThrowsError(try Air75V3KeymapController().makeBridgeProfile(from: wrongLayerEmpty))
+
+        var unknownEighthLayerValue = bytes
+        let unknownValueOffset = (7 * 98 + 60) * 2
+        unknownEighthLayerValue[unknownValueOffset] = 0x12
+        unknownEighthLayerValue[unknownValueOffset + 1] = 0x34
+        XCTAssertThrowsError(try Air75V3KeymapController().makeBridgeProfile(from: unknownEighthLayerValue))
     }
 
     func testCustomBindingsSurviveHardwareProfileInstallAndRestore() {
